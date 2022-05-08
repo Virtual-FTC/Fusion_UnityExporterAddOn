@@ -1,0 +1,18 @@
+Current Unsolved Issues:
+
+-Joint Selection Info won't get saved per flipping through motor Selections
+
+-How to Export Robot File into a 3D File Format for Unity to use during runtime
+
+
+General Things Left Undone:
+
+- Servos, Sensors, and Drive Train config options
+
+- JSON Format for Exporting to Unity
+
+- Everything on the Unity side
+
+
+AddOn Project started by Gavin Hughes / Redstone Engine
+Email: ghughes.2pi@gmail.com
