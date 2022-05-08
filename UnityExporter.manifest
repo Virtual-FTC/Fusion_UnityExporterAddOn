@@ -1,0 +1,10 @@
+{
+	"autodeskProduct":	"Fusion360",
+	"type":	"script",
+	"author":	"RedEng Dev",
+	"description":	{
+		"":	"Gets and Modifies info for Exporting to Unity"
+	},
+	"supportedOS":	"windows|mac",
+	"editEnabled":	true
+}
