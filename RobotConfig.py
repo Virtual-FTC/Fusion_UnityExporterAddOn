@@ -4,7 +4,10 @@ import cmd
 import configparser
 from email.mime import application, base
 from glob import glob
+import json
 from pickle import TRUE
+import threading
+import time
 from turtle import update
 import adsk.core, adsk.fusion, traceback
 
@@ -13,6 +16,7 @@ app = None
 ui  = None
 onStep = True
 
+listOfJoints = []
 configInfo = {"motors":[{"name":"frontLeft"}, {"name":"frontRight"}, {"name":"backLeft"}, {"name":"backRight"}],
  "servos":[], "sensors":[], "drive_train":[]}
 motorSelection = 0
@@ -62,28 +66,109 @@ def updateConfig(tableInput):
         # Joint Selection
         motorsInputSelect = motorConfigInputs.itemById('motor_joints')
         motorsInputSelect.clearSelection()
-        motorsInputSelect.hasFocus = False
         if "joints" in configInfo["motors"][motorSelection]:
-            #select = ui.activeSelections
-            #select.clear()
-            product = app.activeProduct
-            design = adsk.fusion.Design.cast(product)
-            rootComp = design.rootComponent
             for joint in configInfo["motors"][motorSelection]["joints"]:
-                #select.add(joint)
                 motorsInputSelect.addSelection(joint)
+        # Gear Ratio
+        motorsValueInput = motorConfigInputs.itemById('motor_ratio')
+        motorsValueInput.value = 1
+        if "ratio" in configInfo["motors"][motorSelection]:
+            motorsValueInput.value = configInfo["motors"][motorSelection]["ratio"]
+        # Motor Max RPM
+        motorsValueInput = motorConfigInputs.itemById('motor_rpm')
+        motorsValueInput.value = 340
+        if "maxRPM" in configInfo["motors"][motorSelection]:
+            motorsValueInput.value = configInfo["motors"][motorSelection]["maxRPM"]
+        # Motor Max RPM
+        motorsValueInput = motorConfigInputs.itemById('motor_encoders')
+        motorsValueInput.value = 560
+        if "ticksPerRev" in configInfo["motors"][motorSelection]:
+            motorsValueInput.value = configInfo["motors"][motorSelection]["ticksPerRev"]
+
+# Only Select Custom Graphics due to Joint Selection Issues
+class MyPreSelectHandler(adsk.core.SelectionEventHandler):
+    def __init__(self):
+        super().__init__()
+    def notify(self, args: adsk.core.SelectionEventArgs):
+        # Selection of the element under the mouse cursor.
+        sel: adsk.core.Selection = args.selection
+        ent = sel.entity
+
+        if not ent:
+            return False
+
+        # Filtering by classType.
+        if ent.classType() != adsk.fusion.CustomGraphicsPointSet.classType():
+            # If not CustomGraphicsPointSet, disallow selection.
+            args.isSelectable = False
 
 # Adds Joint Selection Info into Config Object
 def selectJoints(selectInput):
+    motorsInputReverse = selectInput.parentCommandInput.children.itemById('motor_joints_reverse')
+    motorsInputReverse.listItems.clear()
     if selectInput.selectionCount > 0:
         configInfo["motors"][motorSelection]["joints"] = []
-        configInfo["motors"][motorSelection]["reverse"] = []
-    if selectInput.selectionCount == 0 and "joints" in configInfo["motors"][motorSelection]:
+        if "reverse" not in configInfo["motors"][motorSelection]:
+            configInfo["motors"][motorSelection]["reverse"] = []
+    elif "joints" in configInfo["motors"][motorSelection]:
         del configInfo["motors"][motorSelection]["joints"]
-        del configInfo["motors"][motorSelection]["reverse"]
     # Adds Selections into corresponding joints array
     for i in range(selectInput.selectionCount):
         configInfo["motors"][motorSelection]["joints"].append(selectInput.selection(i).entity)
+        thisJoint = None
+        for joint in listOfJoints:
+            if joint[0] == selectInput.selection(i).entity:
+                thisJoint = joint[1]
+                break
+        motorsInputReverse.listItems.add("Joint " + str(i + 1) + ": " + thisJoint.name,
+            selectInput.selection(i).entity in configInfo["motors"][motorSelection]["reverse"])
+    reverseJoints(motorsInputReverse)
+
+# Reverses joint info
+def reverseJoints(dropDownInput):
+    if "joints" not in configInfo["motors"][motorSelection]:
+        configInfo["motors"][motorSelection]["joints"] = []
+    configInfo["motors"][motorSelection]["reverse"] = []
+    # Stores Info
+    for i in range(dropDownInput.listItems.count):
+        if dropDownInput.listItems.item(i).isSelected:
+            configInfo["motors"][motorSelection]["reverse"].append(configInfo["motors"][motorSelection]["joints"][i])
+
+# Tells joints to power
+def testJoints(tabInput):
+    # Hides Commands
+    tabInput = tabInput.parentCommandInput.parentCommandInput
+    for i in range(tabInput.children.count):
+        tabInput.children.item(i).isVisible = False
+    app.activeViewport.refresh()
+    if "joints" not in configInfo["motors"][motorSelection]:
+        configInfo["motors"][motorSelection]["joints"] = []
+    # Gets Joints and Reversals
+    joints = []
+    direction = []
+    for jointLink in configInfo["motors"][motorSelection]["joints"]:
+        for joint in listOfJoints:
+            if joint[0] == jointLink:
+                joints.append(joint[1])
+                break
+        if jointLink in configInfo["motors"][motorSelection]["reverse"]:
+            direction.append(-1)
+        else:
+            direction.append(1)
+    originalRot = [x.jointMotion.rotationValue for x in joints]
+    # Updates to screen
+    for i in range(15):
+        # Updates Joints
+        for j in range(len(joints)):
+            joints[j].jointMotion.rotationValue += .25 * direction[j]
+        adsk.doEvents()
+        app.activeViewport.refresh()
+    # Reset Everything
+    for j in range(len(joints)):
+        joints[j].jointMotion.rotationValue = originalRot[j]
+    for i in range(tabInput.children.count):
+        tabInput.children.item(i).isVisible = True
+    updateConfig(tabInput.children.itemById('motors_table'))
 
 
 # Event handler that reacts to any changes the user makes to any of the command inputs.
@@ -99,6 +184,7 @@ class MyCommandInputChangedHandler(adsk.core.InputChangedEventHandler):
             inputs = eventArgs.inputs
             cmdInput = eventArgs.input
             # Motor Inputs
+            # Motor Table Properties
             if cmdInput.id.startswith("motors"):
                 tableInput = inputs.itemById('motors_table')
                 if cmdInput.id == "motors_move_up":
@@ -128,9 +214,20 @@ class MyCommandInputChangedHandler(adsk.core.InputChangedEventHandler):
                         currentRow = int(cmdInput.id[18:])
                         configInfo["motors"].pop(currentRow)
                         updateTable(tableInput, currentRow)
+            # Motor Info Properties
             elif cmdInput.id.startswith("motor"):
                 if cmdInput.id == 'motor_joints':
                     selectJoints(cmdInput)
+                elif cmdInput.id == 'motor_joints_reverse':
+                    reverseJoints(cmdInput)
+                elif cmdInput.id == 'motor_power':
+                    testJoints(cmdInput)
+                elif cmdInput.id == 'motor_ratio':
+                    configInfo["motors"][motorSelection]["ratio"] = cmdInput.value
+                elif cmdInput.id == 'motor_rpm':
+                    configInfo["motors"][motorSelection]["maxRPM"] = cmdInput.value
+                elif cmdInput.id == 'motor_encoders':
+                    configInfo["motors"][motorSelection]["ticksPerRev"] = cmdInput.value
 
         except:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
@@ -168,6 +265,15 @@ class MyExecuteHandler(adsk.core.CommandEventHandler):
             if not onStep:
                 return
             onStep = False
+
+            design = adsk.fusion.Design.cast(app.activeProduct)
+            rootComp = design.rootComponent
+            # Check to see if a custom graphics groups already exists and delete it.
+            while rootComp.customGraphicsGroups.count > 0:
+                rootComp.customGraphicsGroups.item(0).deleteMe()
+            app.activeViewport.refresh()
+
+            # Move on to next phase!
             myCustomEvent = 'Phase2-MeshThread'
             app.fireCustomEvent(myCustomEvent, '') 
         except:
@@ -183,6 +289,10 @@ class MyCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
         try:
             # Get the command that was created.
             cmd = adsk.core.Command.cast(args.command)
+
+            onPreSelect = MyPreSelectHandler()
+            cmd.preSelect.add(onPreSelect)
+            _handlers.append(onPreSelect)
 
             # Connect to the command destroyed event.
             onDestroy = MyCommandDestroyHandler()
@@ -229,7 +339,6 @@ class MyCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
 
             # Select Joints
             motorsInputSelect = motorConfigInputs.addSelectionInput('motor_joints', 'Joints', 'Select Joints this Motor affects')
-            motorsInputSelect.addSelectionFilter("JointOrigins")
             motorsInputSelect.setSelectionLimits(0)
 
             # Reverse Joints Option
@@ -237,25 +346,29 @@ class MyCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             motorsInputReverse.listItems.add('Joint 1', False)
             motorsInputReverse.listItems.add('Joint 2', False)
 
-            # Slider to Visualize Movement
-            motorsInputPower = motorConfigInputs.addFloatSliderListCommandInput('motor_power', 'Test Movement', '', [-1, -.5, 0, .5, 1])
-            motorsInputPower.valueOne = 0
-            motorsInputPower.setText('-1', '1 ')
+            # Slider to Visualize Movement (Too much lag and unresponsive commands)
+            #motorsInputPower = motorConfigInputs.addFloatSliderListCommandInput('motor_power', 'Test Movement', '', [-1, -.5, 0, .5, 1])
+            #motorsInputPower.valueOne = 0
+            #motorsInputPower.setText('-1', '1 ')
+
+            # Button to Visualize Movement
+            motorConfigInputs.addBoolValueInput('motor_power', '   Test Direction:', False, 'resources/Power', False)
 
             # Values for Motors
-            motorConfigInputs.addIntegerSpinnerCommandInput('motor_rpm', 'Max RPM', 0, 10000, 1, 340)
-            motorConfigInputs.addIntegerSpinnerCommandInput('motor_encoders', 'Encoder Ticks', 0, 10000, 1, 560)
+            motorConfigInputs.addFloatSpinnerCommandInput('motor_ratio', 'Gear Ratio', '', .01, 10000, .25, 1)
+            motorConfigInputs.addIntegerSpinnerCommandInput('motor_rpm', 'Max RPM', 0, 10000, 10, 340)
+            motorConfigInputs.addIntegerSpinnerCommandInput('motor_encoders', 'Encoder Ticks', 0, 10000, 10, 560)
 
             # Updates Motor Table
             updateTable(motorsInput, 0)
 
             # Tab for Servos
-            tabServos = inputs.addTabCommandInput('tab_servos', 'Servos')
-            tabServosInputs = tabServos.children
+            #tabServos = inputs.addTabCommandInput('tab_servos', 'Servos')
+            #tabServosInputs = tabServos.children
 
             # Tab for Sensors
-            tabSensors = inputs.addTabCommandInput('tab_sensors', 'Sensors')
-            tabSensorsInputs = tabSensors.children
+            #tabSensors = inputs.addTabCommandInput('tab_sensors', 'Sensors')
+            #tabSensorsInputs = tabSensors.children
 
             # Tab for Drive Train
             tabDrive = inputs.addTabCommandInput('tab_drvie', 'Drive Train')
@@ -270,6 +383,56 @@ def runConfig():
     global app, ui
     app = adsk.core.Application.get()
     ui = app.userInterface
+
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    rootComp = design.rootComponent
+
+    # Check to see if a custom graphics groups already exists and delete it.
+    while rootComp.customGraphicsGroups.count > 0:
+        rootComp.customGraphicsGroups.item(0).deleteMe()
+    app.activeViewport.refresh()
+
+    # Create a graphics group on the root component.
+    graphics = rootComp.customGraphicsGroups.add()
+
+    # Loops through all joints and places point for selection purposes
+    for revJoint in rootComp.allJoints:
+        if revJoint.jointMotion.jointType != 1:
+            continue
+        # <<Taken from MeshExporter>>
+        jointsOcc = [None, revJoint.occurrenceTwo]
+        if not jointsOcc[1]:
+            jointsOcc[1] = rootComp
+        # Sets Correct Origin Based on Occurrence not Component (Also only 1 origin for offset purposes)
+        if revJoint.geometryOrOriginTwo.objectType == adsk.fusion.JointOrigin.classType():
+            joint = revJoint.geometryOrOriginTwo.geometry
+        else:
+            joint = revJoint.geometryOrOriginTwo
+        jointsOrigin = joint.origin
+        try:
+            if joint.entityOne.objectType == adsk.fusion.ConstructionPoint.classType():
+                baseComp = joint.entityOne.component
+            elif joint.entityOne.objectType == adsk.fusion.SketchPoint.classType():
+                baseComp = rootComp
+            else:
+                baseComp = joint.entityOne.body.parentComponent
+        except:
+            ui.messageBox("Whoops! It seems Joint: \"" + joint.name + "\" is connected to a currently not supported piece of Geometry! In a future update this may be fixed.")
+            joint.entityOne.body.parentComponent
+        baseComp = rootComp.allOccurrencesByComponent(baseComp).item(0)
+        if baseComp:
+            transform = baseComp.transform2
+            transform.invert()
+            transform.transformBy(jointsOcc[1].transform2)
+            jointsOrigin.transformBy(transform)
+        # Adds Point Graphic
+        coord = adsk.fusion.CustomGraphicsCoordinates.create(jointsOrigin.asArray())
+        point = graphics.addPointSet(coord, [0], adsk.fusion.CustomGraphicsPointTypes.UserDefinedCustomGraphicsPointType,
+            'resources/SelectJoint.png')
+        # Add to Array
+        listOfJoints.append([point, revJoint])
+
+    app.activeViewport.refresh()
 
     # Get the existing command definition or create it if it doesn't already exist.
     cmdDef = ui.commandDefinitions.itemById('cmdInputsConfig')
