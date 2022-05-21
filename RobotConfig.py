@@ -18,7 +18,7 @@ onStep = True
 
 listOfJoints = []
 configInfo = {"motors":[{"name":"frontLeft"}, {"name":"frontRight"}, {"name":"backLeft"}, {"name":"backRight"}],
- "servos":[], "sensors":[], "drive_train":{"normal":[], "mecanum":[], "omni":[], "encoder":[]}}
+ "servos":[], "sensors":[], "drive_train":{"standard":[], "mecanum":[], "omni":[], "encoder":[]}}
 motorSelection = 0
 
 
@@ -304,6 +304,19 @@ class MyExecuteHandler(adsk.core.CommandEventHandler):
                 rootComp.customGraphicsGroups.item(0).deleteMe()
             app.activeViewport.refresh()
 
+            # Makes sure configinfo is filled (This confusing system will be fixed soon)
+            for i in range(len(configInfo["motors"])):
+                if "joints" not in configInfo["motors"][i]:
+                    configInfo["motors"][i]["joints"] = []
+                if "reverse" not in configInfo["motors"][i]:
+                    configInfo["motors"][i]["reverse"] = []
+                if "ratio" not in configInfo["motors"][i]:
+                    configInfo["motors"][i]["ratio"] = 1
+                if "maxRPM" not in configInfo["motors"][i]:
+                    configInfo["motors"][i]["maxRPM"] = 340
+                if "ticksPerRev" not in configInfo["motors"][i]:
+                    configInfo["motors"][i]["ticksPerRev"] = 560
+
             # Move on to next phase!
             myCustomEvent = 'Phase2-MeshThread'
             app.fireCustomEvent(myCustomEvent, '') 
@@ -388,7 +401,7 @@ class MyCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             # Values for Motors
             motorConfigInputs.addFloatSpinnerCommandInput('motor_ratio', 'Gear Ratio', '', .01, 10000, .25, 1)
             motorConfigInputs.addIntegerSpinnerCommandInput('motor_rpm', 'Max RPM', 0, 10000, 10, 340)
-            motorConfigInputs.addIntegerSpinnerCommandInput('motor_encoders', 'Encoder Ticks', 0, 10000, 10, 560)
+            motorConfigInputs.addFloatSpinnerCommandInput('motor_encoders', 'Encoder Ticks', '', 0, 10000, 10, 560)
 
             # Updates Motor Table
             updateTable(motorsInput, 0)
@@ -409,9 +422,9 @@ class MyCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             driveConfigGroup = tabDriveInputs.addGroupCommandInput("drive_configuration", "Select Corresponding Joints")
             driveConfigInputs = driveConfigGroup.children
 
-            # Select Joints for Normal
-            normalInputSelect = driveConfigInputs.addSelectionInput('drive_normal', 'Normal Wheels', 'Select Joints that control Normal Wheels')
-            normalInputSelect.setSelectionLimits(0)
+            # Select Joints for Standard
+            standardInputSelect = driveConfigInputs.addSelectionInput('drive_standard', 'Standard Wheels', 'Select Joints that control Standard Wheels')
+            standardInputSelect.setSelectionLimits(0)
 
             # Select Joints for Mecanum
             mecanumInputSelect = driveConfigInputs.addSelectionInput('drive_mecanum', 'Mecanum Wheels', 'Select Joints that control Mecanum Wheels')
@@ -421,7 +434,7 @@ class MyCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             omniInputSelect = driveConfigInputs.addSelectionInput('drive_omni', 'Omni Wheels', 'Select Joints that control Omni Wheels')
             omniInputSelect.setSelectionLimits(0)
 
-            # Select Joints for Mecanum
+            # Select Joints for Encoders
             encoderInputSelect = driveConfigInputs.addSelectionInput('drive_encoder', 'Encoder Wheels', 'Select Joints that link Encoder Wheels')
             encoderInputSelect.setSelectionLimits(0)
 

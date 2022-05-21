@@ -71,6 +71,7 @@ If you experience any issues, feel free to reach out!
 
         # Runs PHASE ONE Script
         RobotConfig.runConfig()
+        #app.fireCustomEvent(customEventID, '') 
     except:
         if ui:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))

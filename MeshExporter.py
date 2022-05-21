@@ -449,34 +449,80 @@ def runMesh():
             link.setAttribute('name', occ.name[:-2])
             robot.appendChild(link)
 
-    # Continues XML File
-    #for motor in RobotConfig.configInfo["motors"]:
 
+    # Continues XML File
+
+    # Adds Joints and their corresponding info
     for joint in rootComp.joints:
         if not joint.name.startswith('unityjoint_'):
             continue
-        jnt = root.createElement('joint')
-        jnt.setAttribute('name', joint.name)
-        robot.appendChild(jnt)
+        jntXML = root.createElement('joint')
+        jntXML.setAttribute('name', joint.name)
+        robot.appendChild(jntXML)
         parent = root.createElement('parent')
         parent.setAttribute('link', joint.occurrenceTwo.name[:-2])
-        jnt.appendChild(parent)
+        jntXML.appendChild(parent)
         child = root.createElement('child')
         child.setAttribute('link', joint.occurrenceOne.name[:-2])
-        jnt.appendChild(child)
+        jntXML.appendChild(child)
         axis = root.createElement('axis')
         rotAxis = joint.jointMotion.rotationAxisVector
         axis.setAttribute('xyz', str(rotAxis.x) + ' ' + str(rotAxis.y) + ' ' + str(rotAxis.z))
-        jnt.appendChild(axis)
+        jntXML.appendChild(axis)
+        # Revolute (Limited) or Continuous
         if joint.jointMotion.rotationLimits.isMaximumValueEnabled:
-            jnt.setAttribute('type', 'revolute')
+            jntXML.setAttribute('type', 'revolute')
             limit = root.createElement('limit')
             limit.setAttribute('upper', str(joint.jointMotion.rotationLimits.maximumValue))
             limit.setAttribute('lower', str(joint.jointMotion.rotationLimits.minimumValue))
-            jnt.appendChild(limit)
+            jntXML.appendChild(limit)
         else:
-            jnt.setAttribute('type', 'continuous')
+            jntXML.setAttribute('type', 'continuous')
 
+    # Adds Motors and their corresponding info
+    for motor in RobotConfig.configInfo["motors"]:
+        mtrXML = root.createElement('motor')
+        mtrXML.setAttribute('name', motor['name'])
+        robot.appendChild(mtrXML)
+        powered = root.createElement('powered')
+        # Finds Selected Joints and their info
+        if len(motor['joints']) > 0:
+            jointsStr = "["
+            for joint in motor['joints']:
+                for i in range(len(RobotConfig.listOfJoints)):
+                    if RobotConfig.listOfJoints[i][0] == joint:
+                        jointsStr += "unityjoint_" + str(i) + ", "
+                        # Inverses Axis if set in Reverse
+                        if joint in motor['reverse']:
+                            for jntXML in root.getElementsByTagName('joint'):
+                                if jntXML.getAttribute('name') == "unityjoint_" + str(i):
+                                    axisNode = jntXML.getElementsByTagName('axis')[0]
+                                    axis = [float(i) for i in axisNode.getAttribute('xyz').split(' ')]
+                                    axisNode.setAttribute('xyz', str(-axis[0]) + ' ' + str(-axis[1]) + ' ' + str(-axis[2]))
+                                    break
+                        break
+            # Adds Joints to info
+            powered.setAttribute('joints', jointsStr[:-2] + "]")
+            mtrXML.appendChild(powered)
+        attributes = root.createElement('attributes')
+        attributes.setAttribute('gearRatio', str(motor['ratio']))
+        attributes.setAttribute('maxRPM', str(motor['maxRPM']))
+        attributes.setAttribute('encoderTicksPerRev', str(motor['ticksPerRev']))
+        mtrXML.appendChild(attributes)
+
+    # Adds Drivetrain Info
+    drivetrain = root.createElement('drivetrain')
+    robot.appendChild(drivetrain)
+    for wheelType, joints in RobotConfig.configInfo['drive_train'].items():
+        if len(joints) > 0:
+            wheelXML = root.createElement(wheelType)
+            jointsStr = "["
+            for joint in joints:
+                for i in range(len(RobotConfig.listOfJoints)):
+                    if RobotConfig.listOfJoints[i][0] == joint:
+                        jointsStr += "unityjoint_" + str(i) + ", "
+            wheelXML.setAttribute('joints', jointsStr[:-2] + "]")
+            drivetrain.appendChild(wheelXML)
 
     xml_string = root.toxml()
 
