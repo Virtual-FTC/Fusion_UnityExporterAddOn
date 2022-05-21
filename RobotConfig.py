@@ -18,7 +18,7 @@ onStep = True
 
 listOfJoints = []
 configInfo = {"motors":[{"name":"frontLeft"}, {"name":"frontRight"}, {"name":"backLeft"}, {"name":"backRight"}],
- "servos":[], "sensors":[], "drive_train":[]}
+ "servos":[], "sensors":[], "drive_train":{"normal":[], "mecanum":[], "omni":[], "encoder":[]}}
 motorSelection = 0
 
 
@@ -69,6 +69,8 @@ def updateConfig(tableInput):
         if "joints" in configInfo["motors"][motorSelection]:
             for joint in configInfo["motors"][motorSelection]["joints"]:
                 motorsInputSelect.addSelection(joint)
+        # Reverse Joint Selection
+        selectJoints(motorsInputSelect)
         # Gear Ratio
         motorsValueInput = motorConfigInputs.itemById('motor_ratio')
         motorsValueInput.value = 1
@@ -138,9 +140,6 @@ def reverseJoints(dropDownInput):
 def testJoints(tabInput):
     # Hides Commands
     tabInput = tabInput.parentCommandInput.parentCommandInput
-    for i in range(tabInput.children.count):
-        tabInput.children.item(i).isVisible = False
-    app.activeViewport.refresh()
     if "joints" not in configInfo["motors"][motorSelection]:
         configInfo["motors"][motorSelection]["joints"] = []
     # Gets Joints and Reversals
@@ -161,14 +160,40 @@ def testJoints(tabInput):
         # Updates Joints
         for j in range(len(joints)):
             joints[j].jointMotion.rotationValue += .25 * direction[j]
-        adsk.doEvents()
+        if i % 3 == 0:
+            adsk.doEvents()
         app.activeViewport.refresh()
+        time.sleep(.01)
     # Reset Everything
     for j in range(len(joints)):
         joints[j].jointMotion.rotationValue = originalRot[j]
-    for i in range(tabInput.children.count):
-        tabInput.children.item(i).isVisible = True
     updateConfig(tabInput.children.itemById('motors_table'))
+
+# Saves values from selections
+def driveTrainSave(selectInput):
+    configInfo["drive_train"][selectInput.id[6:]] = []
+    for i in range(selectInput.selectionCount):
+        configInfo["drive_train"][selectInput.id[6:]].append(selectInput.selection(i).entity)
+
+# Updates Values when changing tabs
+def changeTabUpdate(inputs):
+    # Reset Selections
+    for input in inputs:
+        if input.classType() == adsk.core.SelectionCommandInput.classType():
+            input.clearSelection()
+    # Motors Tab
+    tabInput = inputs.itemById("tab_motors")
+    if tabInput.isActive:
+        updateConfig(tabInput.children.item(0))
+        tabInput.children.item(1).children.item(0).hasFocus = True
+    # Drive Train Tab
+    tabInput = inputs.itemById("tab_drive")
+    if tabInput.isActive:
+        for i in range(4):
+            selectId = tabInput.children.item(0).children.item(i).id[6:]
+            for joint in configInfo["drive_train"][selectId]:
+                tabInput.children.item(0).children.item(i).addSelection(joint)
+        tabInput.children.item(0).children.item(0).hasFocus = True
 
 
 # Event handler that reacts to any changes the user makes to any of the command inputs.
@@ -183,9 +208,12 @@ class MyCommandInputChangedHandler(adsk.core.InputChangedEventHandler):
             eventArgs = adsk.core.InputChangedEventArgs.cast(args)
             inputs = eventArgs.inputs
             cmdInput = eventArgs.input
-            # Motor Inputs
+            # SWITCH TABS
+            if cmdInput.id.startswith("APITabBar"):
+                changeTabUpdate(inputs)
+            # MOTOR TAB
             # Motor Table Properties
-            if cmdInput.id.startswith("motors"):
+            elif cmdInput.id.startswith("motors"):
                 tableInput = inputs.itemById('motors_table')
                 if cmdInput.id == "motors_move_up":
                     currentRow = tableInput.selectedRow
@@ -228,7 +256,10 @@ class MyCommandInputChangedHandler(adsk.core.InputChangedEventHandler):
                     configInfo["motors"][motorSelection]["maxRPM"] = cmdInput.value
                 elif cmdInput.id == 'motor_encoders':
                     configInfo["motors"][motorSelection]["ticksPerRev"] = cmdInput.value
-
+            # DRIVE TRAIN TAB
+            # Save Drive Train Joints
+            elif cmdInput.id.startswith("drive"):
+                driveTrainSave(cmdInput)
         except:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
             adsk.terminate()
@@ -352,7 +383,7 @@ class MyCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             #motorsInputPower.setText('-1', '1 ')
 
             # Button to Visualize Movement
-            motorConfigInputs.addBoolValueInput('motor_power', '   Test Direction:', False, 'resources/Power', False)
+            motorConfigInputs.addBoolValueInput('motor_power', ' [Test Direction]', False, 'resources/Power', False)
 
             # Values for Motors
             motorConfigInputs.addFloatSpinnerCommandInput('motor_ratio', 'Gear Ratio', '', .01, 10000, .25, 1)
@@ -371,8 +402,28 @@ class MyCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
             #tabSensorsInputs = tabSensors.children
 
             # Tab for Drive Train
-            tabDrive = inputs.addTabCommandInput('tab_drvie', 'Drive Train')
+            tabDrive = inputs.addTabCommandInput('tab_drive', 'Drive Train')
             tabDriveInputs = tabDrive.children
+
+            # Create group for Motor Config
+            driveConfigGroup = tabDriveInputs.addGroupCommandInput("drive_configuration", "Select Corresponding Joints")
+            driveConfigInputs = driveConfigGroup.children
+
+            # Select Joints for Normal
+            normalInputSelect = driveConfigInputs.addSelectionInput('drive_normal', 'Normal Wheels', 'Select Joints that control Normal Wheels')
+            normalInputSelect.setSelectionLimits(0)
+
+            # Select Joints for Mecanum
+            mecanumInputSelect = driveConfigInputs.addSelectionInput('drive_mecanum', 'Mecanum Wheels', 'Select Joints that control Mecanum Wheels')
+            mecanumInputSelect.setSelectionLimits(0)
+
+            # Select Joints for Omni
+            omniInputSelect = driveConfigInputs.addSelectionInput('drive_omni', 'Omni Wheels', 'Select Joints that control Omni Wheels')
+            omniInputSelect.setSelectionLimits(0)
+
+            # Select Joints for Mecanum
+            encoderInputSelect = driveConfigInputs.addSelectionInput('drive_encoder', 'Encoder Wheels', 'Select Joints that link Encoder Wheels')
+            encoderInputSelect.setSelectionLimits(0)
 
         except:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
