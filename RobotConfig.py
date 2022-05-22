@@ -481,7 +481,7 @@ def runConfig():
             else:
                 baseComp = joint.entityOne.body.parentComponent
         except:
-            ui.messageBox("Whoops! It seems Joint: \"" + joint.name + "\" is connected to a currently not supported piece of Geometry! In a future update this may be fixed.")
+            ui.messageBox("Whoops! It seems Joint: \"" + revJoint.name + "\" is connected to a currently not supported piece of Geometry! In a future update this may be fixed.")
             joint.entityOne.body.parentComponent
         baseComp = rootComp.allOccurrencesByComponent(baseComp).item(0)
         if baseComp:
@@ -489,6 +489,7 @@ def runConfig():
             transform.invert()
             transform.transformBy(jointsOcc[1].transform2)
             jointsOrigin.transformBy(transform)
+        # <<Taken from MeshExporter>>
         # Adds Point Graphic
         coord = adsk.fusion.CustomGraphicsCoordinates.create(jointsOrigin.asArray())
         point = graphics.addPointSet(coord, [0], adsk.fusion.CustomGraphicsPointTypes.UserDefinedCustomGraphicsPointType,

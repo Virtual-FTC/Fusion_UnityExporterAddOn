@@ -73,7 +73,7 @@ def traverseAssembly(occurrences, assembledComps, _assembledComps, progressBar, 
 # Recursively travels through assemblies deleting small bodies
 def removeSmallInAssembly(occurrences, progressBar, rootComp):
     for occ in occurrences:
-        if occ.name == "base_link:1":
+        if occ.name == "unitycomp_0:1":
             return
         
         #box = occ.boundingBox
@@ -155,7 +155,7 @@ def runMesh():
     # (First Assembled Group is Base Group)
     assembledComps = [[]]
     _assembledComps = [rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())]
-    _assembledComps[0].component.name = "base_link"
+    _assembledComps[0].component.name = "unitycomp_0"
 
     # Does Rigid Groups First
     if progressBar.wasCancelled:
@@ -343,7 +343,7 @@ def runMesh():
             if newOcc:
                 newOcc.moveToComponent(_assembledComps[i])
         progressBar.progressValue += 1
-    while rootComp.occurrences.item(0).name != "base_link:1":
+    while rootComp.occurrences.item(0).name != "unitycomp_0:1":
         rootComp.occurrences.item(0).moveToComponent(_assembledComps[0])
     progressBar.progressValue += 1
 
@@ -409,12 +409,6 @@ def runMesh():
     progressBar.show("Converting Robot File", "Step 4: Creating Final Meshes...", 0, rootComp.occurrences.count, 0)
     progressBar.progressValue = 0
 
-    # (Begins XML URDF File)
-    root = minidom.Document()
-    robot = root.createElement('robot')
-    robot.setAttribute('name', app.activeDocument.name)
-    root.appendChild(robot)
-
     for o in range(rootComp.occurrences.count):
         try:
             # STL
@@ -427,6 +421,7 @@ def runMesh():
             stlExport.surfaceDeviation *= 10
             design.exportManager.execute(stlExport)
             # XML
+            '''
             link = root.createElement('link')
             link.setAttribute('name', occ.name[:-2])
             robot.appendChild(link)
@@ -440,41 +435,84 @@ def runMesh():
             coll = root.createElement('collision')
             link.appendChild(coll)
             coll.appendChild(geom.cloneNode(deep=True))
+            '''
             # Progress
             progressBar.progressValue += 1
         except:
             # (Empty Occurrence)
             # XML
+            '''
             link = root.createElement('link')
             link.setAttribute('name', occ.name[:-2])
             robot.appendChild(link)
+            '''
 
+    progressBar.show("Converting Robot File", "Step 5: Finalizing URDF File...", 0, 1, 0)
+    progressBar.progressValue = 1
 
-    # Continues XML File
+    # Creates XML URDF File
+    root = minidom.Document()
+    robot = root.createElement('robot')
+    robot.setAttribute('name', app.activeDocument.name)
+    root.appendChild(robot)
+
+    attributes = root.createElement('attributes')
+    robot.appendChild(attributes)
 
     # Adds Joints and their corresponding info
-    for joint in rootComp.joints:
-        if not joint.name.startswith('unityjoint_'):
+    for revJoint in rootComp.joints:
+        if not revJoint.name.startswith('unityjoint_'):
             continue
         jntXML = root.createElement('joint')
-        jntXML.setAttribute('name', joint.name)
+        jntXML.setAttribute('name', revJoint.name)
         robot.appendChild(jntXML)
         parent = root.createElement('parent')
-        parent.setAttribute('link', joint.occurrenceTwo.name[:-2])
+        parent.setAttribute('link', revJoint.occurrenceTwo.name[:-2])
         jntXML.appendChild(parent)
         child = root.createElement('child')
-        child.setAttribute('link', joint.occurrenceOne.name[:-2])
+        child.setAttribute('link', revJoint.occurrenceOne.name[:-2])
         jntXML.appendChild(child)
         axis = root.createElement('axis')
-        rotAxis = joint.jointMotion.rotationAxisVector
+        rotAxis = revJoint.jointMotion.rotationAxisVector
         axis.setAttribute('xyz', str(rotAxis.x) + ' ' + str(rotAxis.y) + ' ' + str(rotAxis.z))
         jntXML.appendChild(axis)
+        # Finds Origin of Joint
+        # <<Taken from Above Code>> (Should be modified into method for all to use)
+        jointsOcc = [None, revJoint.occurrenceTwo]
+        if not jointsOcc[1]:
+            jointsOcc[1] = rootComp
+        # Sets Correct Origin Based on Occurrence not Component (Also only 1 origin for offset purposes)
+        if revJoint.geometryOrOriginTwo.objectType == adsk.fusion.JointOrigin.classType():
+            joint = revJoint.geometryOrOriginTwo.geometry
+        else:
+            joint = revJoint.geometryOrOriginTwo
+        jointsOrigin = joint.origin
+        try:
+            if joint.entityOne.objectType == adsk.fusion.ConstructionPoint.classType():
+                baseComp = joint.entityOne.component
+            elif joint.entityOne.objectType == adsk.fusion.SketchPoint.classType():
+                baseComp = rootComp
+            else:
+                baseComp = joint.entityOne.body.parentComponent
+        except:
+            ui.messageBox("Whoops! It seems Joint: \"" + revJoint.name + "\" is connected to a currently not supported piece of Geometry! In a future update this may be fixed.")
+            joint.entityOne.body.parentComponent
+        baseComp = rootComp.allOccurrencesByComponent(baseComp).item(0)
+        if baseComp:
+            transform = baseComp.transform2
+            transform.invert()
+            transform.transformBy(jointsOcc[1].transform2)
+            jointsOrigin.transformBy(transform)
+        # <<Taken from Above Code>>
+        origin = root.createElement('origin')
+        origin.setAttribute('xyz', str(jointsOrigin.x) + " " + str(jointsOrigin.y) + " " + str(jointsOrigin.z))
+        jntXML.appendChild(origin)
         # Revolute (Limited) or Continuous
-        if joint.jointMotion.rotationLimits.isMaximumValueEnabled:
+        if revJoint.jointMotion.rotationLimits.isMaximumValueEnabled:
             jntXML.setAttribute('type', 'revolute')
             limit = root.createElement('limit')
-            limit.setAttribute('upper', str(joint.jointMotion.rotationLimits.maximumValue))
-            limit.setAttribute('lower', str(joint.jointMotion.rotationLimits.minimumValue))
+            limit.setAttribute('upper', str(revJoint.jointMotion.rotationLimits.maximumValue))
+            limit.setAttribute('lower', str(revJoint.jointMotion.rotationLimits.minimumValue))
             jntXML.appendChild(limit)
         else:
             jntXML.setAttribute('type', 'continuous')
@@ -487,11 +525,11 @@ def runMesh():
         powered = root.createElement('powered')
         # Finds Selected Joints and their info
         if len(motor['joints']) > 0:
-            jointsStr = "["
+            jointsStr = ""
             for joint in motor['joints']:
                 for i in range(len(RobotConfig.listOfJoints)):
                     if RobotConfig.listOfJoints[i][0] == joint:
-                        jointsStr += "unityjoint_" + str(i) + ", "
+                        jointsStr += "unityjoint_" + str(i) + " "
                         # Inverses Axis if set in Reverse
                         if joint in motor['reverse']:
                             for jntXML in root.getElementsByTagName('joint'):
@@ -502,7 +540,7 @@ def runMesh():
                                     break
                         break
             # Adds Joints to info
-            powered.setAttribute('joints', jointsStr[:-2] + "]")
+            powered.setAttribute('joints', jointsStr[:-1])
             mtrXML.appendChild(powered)
         attributes = root.createElement('attributes')
         attributes.setAttribute('gearRatio', str(motor['ratio']))
@@ -516,12 +554,12 @@ def runMesh():
     for wheelType, joints in RobotConfig.configInfo['drive_train'].items():
         if len(joints) > 0:
             wheelXML = root.createElement(wheelType)
-            jointsStr = "["
+            jointsStr = ""
             for joint in joints:
                 for i in range(len(RobotConfig.listOfJoints)):
                     if RobotConfig.listOfJoints[i][0] == joint:
-                        jointsStr += "unityjoint_" + str(i) + ", "
-            wheelXML.setAttribute('joints', jointsStr[:-2] + "]")
+                        jointsStr += "unityjoint_" + str(i) + " "
+            wheelXML.setAttribute('joints', jointsStr[:-1])
             drivetrain.appendChild(wheelXML)
 
     xml_string = root.toxml()
