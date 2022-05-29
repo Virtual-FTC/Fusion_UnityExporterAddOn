@@ -316,6 +316,22 @@ class MyExecuteHandler(adsk.core.CommandEventHandler):
                     configInfo["motors"][i]["maxRPM"] = 340
                 if "ticksPerRev" not in configInfo["motors"][i]:
                     configInfo["motors"][i]["ticksPerRev"] = 560
+                # Converts Icons to JointIndices
+                for j in range(len(listOfJoints)):
+                    for jntIndex in range(len(configInfo["motors"][i]["joints"])):
+                        if configInfo["motors"][i]["joints"][jntIndex] == listOfJoints[j][0]:
+                            configInfo["motors"][i]["joints"][jntIndex] = j
+                            break
+                    for jntIndex in range(len(configInfo["motors"][i]["reverse"])):
+                        if configInfo["motors"][i]["reverse"][jntIndex] == listOfJoints[j][0]:
+                            configInfo["motors"][i]["reverse"][jntIndex] = j
+                            break
+            for j in range(len(listOfJoints)):
+                for wheelType in configInfo['drive_train'].keys():
+                    for jntIndex in range(len(configInfo['drive_train'][wheelType])):
+                        if configInfo['drive_train'][wheelType][jntIndex] == listOfJoints[j][0]:
+                            configInfo['drive_train'][wheelType][jntIndex] = j
+                            break
 
             # Move on to next phase!
             myCustomEvent = 'Phase2-MeshThread'

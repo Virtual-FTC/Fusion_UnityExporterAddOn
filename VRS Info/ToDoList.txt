@@ -1,18 +1,10 @@
-Current Unsolved Issues:
+Current ToDo List for AddOn:
 
--Joint Selection Info won't get saved per flipping through motor Selections
+- "Mimic" Motors or some type of reverse/forward joints system
 
--How to Export Robot File into a 3D File Format for Unity to use during runtime
+- Servos and Sensors config options
 
-
-General Things Left Undone:
-
-- Servos, Sensors, and Drive Train config options
-
-- JSON Format for Exporting to Unity
-
-- Everything on the Unity side
-
+- Clean up code
 
 AddOn Project started by Gavin Hughes / Redstone Engine
 Email: ghughes.2pi@gmail.com

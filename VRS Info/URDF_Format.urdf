@@ -1,0 +1,16 @@
+<?xml version="1.0" ?>
+<robot name="_name_">
+	<attributes/>
+	<joint name="unityjoint_?" type="continuous"/"revolute">
+		<parent link="unitycomp_?"/>
+		<child link="unitycomp_?"/>
+		<axis xyz="x y z"/>
+		<origin xyz="z y z"/>
+         <wheel type="standard"/"mecanum"/"omni"/"encoder"/>
+         <limits lower="rad" upper="rad"/>
+	</joint>
+	<motor name="_name_">
+		<powered joints="unityjoint_? ..."/>
+		<attributes gearRatio="1" maxRPM="340" encoderTicksPerRev="560"/>
+	</motor>
+</robot>

@@ -2,11 +2,10 @@
 
 from asyncio.windows_events import NULL
 from email.mime import application, base
-import os
 from pickle import TRUE
 from xml.dom import minidom
 import adsk.core, adsk.fusion, traceback
-from . import RobotConfig
+from . import UnityExporter
 
 
 # Recursively travels through assemblies and stores all assemblies with joint info
@@ -24,51 +23,6 @@ def findJointAssemblies(occurrences):
                 assemblyOcc.append(o)
 
     return assemblyOcc
-
-
-'''
-# Recursively travels through assemblies moving components to new _UnityComp_ Components
-def traverseAssembly(occurrences, assembledComps, _assembledComps, progressBar, rootComp):
-    if rootComp:
-        progressBar.show("Converting Robot File", "Step 2: Combining Components...", 0, occurrences.count - len(assembledComps), 0)
-        progressBar.progressValue = 0
-        # Specific Loop for RootComp Bodies
-        while rootComp.bRepBodies.count > 0:
-            if rootComp.bRepBodies.item(0).volume > 1.5:
-                rootComp.bRepBodies.item(0).copyToComponent(_assembledComps[0])
-            rootComp.bRepBodies.item(0).deleteMe()
-    # Loops through Occurrences
-    o = 0
-    while o < occurrences.count:
-        occ = occurrences.item(o)
-
-        if occ.name == "_UnityComp_0:1":
-            return
-
-        unityComp = _assembledComps[0]
-        for i in range(1, len(assembledComps)):
-            if occ.fullPathName in assembledComps[i]:
-                unityComp = _assembledComps[i]
-                break
-
-        if occ.childOccurrences:
-            traverseAssembly(occ.childOccurrences, assembledComps, _assembledComps, progressBar, None)
-
-        for body in occ.bRepBodies:
-            if body.volume > 1.5:
-                body.copyToComponent(unityComp)
-
-        if progressBar.wasCancelled:
-            return
-
-        # Updates List
-        if rootComp:
-            occ.deleteMe()
-            occurrences = rootComp.occurrences.asList
-            progressBar.progressValue += 1
-        else:
-            o += 1
-'''
 
 # Recursively travels through assemblies deleting small bodies
 def removeSmallInAssembly(occurrences, progressBar, rootComp):
@@ -90,50 +44,10 @@ def removeSmallInAssembly(occurrences, progressBar, rootComp):
         if progressBar:
             progressBar.progressValue += 1
 
-'''
-# Recursively travels through assemblies moving Occurrences to new _UnityComp_ Occurrences
-def combineAssembly(occurrences, assembledComps, _assembledComps, progressBar, rootComp):
-    if rootComp:
-        # Specific Loop for RootComp Bodies
-        while rootComp.bRepBodies.count > 0:
-            if rootComp.bRepBodies.item(0).volume > 1.5:
-                rootComp.bRepBodies.item(0).copyToComponent(_assembledComps[0])
-            rootComp.bRepBodies.item(0).deleteMe()
-    # Loops through Occurrences
-    o = 0
-    while o < occurrences.count:
-        occ = occurrences.item(o)
-
-        if occ.name == "_UnityComp_0:1":
-            return
-
-        unityComp = _assembledComps[0]
-        for i in range(1, len(assembledComps)):
-            if occ.fullPathName in assembledComps[i]:
-                unityComp = _assembledComps[i]
-                break
-
-        if occ.childOccurrences and unityComp == _assembledComps[0]:
-            combineAssembly(occ.childOccurrences, assembledComps, _assembledComps, progressBar, None)
-
-        if rootComp or len(occ.fullPathName.split(":")) > 2:
-            occ.nativeObject.moveToComponent(unityComp)
-        else:
-            return
-
-        if progressBar.wasCancelled:
-            return
-
-        # Updates List
-        if rootComp:
-            occurrences = rootComp.occurrences.asList
-            progressBar.progressValue += 1
-'''
 
 def runMesh():
     app = adsk.core.Application.get()
     ui = app.userInterface
-
 
     # Get the root component of the active design
     product = app.activeProduct
@@ -327,10 +241,9 @@ def runMesh():
     progressBar.progressValue = 0
     removeSmallInAssembly(rootComp.occurrences.asList, progressBar, rootComp)
 
-    # New Meshing Code
+    # Meshing Code
     progressBar.show("Converting Robot File", "Step 3: Combining Occurrences...", 0, len(assembledComps), 0)
     progressBar.progressValue = 0
-    #combineAssembly(rootComp.occurrences.asList, assembledComps, _assembledComps, progressBar, rootComp)
     for i in range(1, len(assembledComps)):
         for c in range(len(assembledComps[i])):
             childOccs = rootComp.occurrences
@@ -347,231 +260,6 @@ def runMesh():
         rootComp.occurrences.item(0).moveToComponent(_assembledComps[0])
     progressBar.progressValue += 1
 
-    # Previous Code
-    '''
-    # Big Loop of all Components to put into Linked _UnityComp_ Components
-    traverseAssembly(rootComp.occurrences.asList, assembledComps, _assembledComps, progressBar, rootComp)
-    app.activeViewport.refresh()
-    if progressBar.wasCancelled:
-        return True
+    UnityExporter.finalExport()
 
-
-    # Meshes and combines all bodies in Components
-    progressBar.show("Converting Robot File", "Step 3: Creating Final Meshes...", 0, rootComp.occurrences.count * 2, 0)
-    progressBar.progressValue = 0
-    select = ui.activeSelections
-
-    # Loops through Occurrences
-    for o in range(rootComp.occurrences.count):
-        occ = rootComp.occurrences.item(o)
-        select.clear()
-
-        # Creates Low Quality Meshes from Bodies
-        txtCmds = ['Commands.Start ParaMeshTessellateCommand', 'NuCommands.CommitCmd']
-        for bod in occ.component.bRepBodies:
-            select.add(bod.createForAssemblyContext(rootComp.allOccurrences[o]))
-        app.executeTextCommand(txtCmds[0])
-        app.executeTextCommand(txtCmds[1])
-        progressBar.progressValue += 1
-        app.activeViewport.refresh()
-        if progressBar.wasCancelled:
-            return True
-
-        # Reduces Mesh to Lower Quality
-        txtCmds = ['Commands.Start ParaMeshReduceCommand', 'Commands.setDouble infoReduceProportion 10', 'NuCommands.CommitCmd']
-        if o == 0:
-            txtCmds = ['Commands.Start ParaMeshReduceCommand', 'Commands.setDouble infoReduceProportion 5', 'NuCommands.CommitCmd']
-        for bod in occ.component.meshBodies:
-            select.add(bod.createForAssemblyContext(rootComp.allOccurrences[o]))
-            for cmd in txtCmds:
-                app.executeTextCommand(cmd)
-        progressBar.progressValue += 1
-        app.activeViewport.refresh()
-        if progressBar.wasCancelled:
-            return True
-    '''
-
-    # Store Meshes
-    ui.messageBox("Select Location to Store Folder of Robot Data", "Almost Finished!")
-
-    folderDia = ui.createFolderDialog()
-    folderDia.title = "Select Location to Store Folder of Robot Data"
-    dlgResults = folderDia.showDialog()
-
-    if dlgResults != 0:
-        return
-
-    exportPath = folderDia.folder + "/" + app.activeDocument.name
-
-    if not os.path.exists(exportPath):
-        os.makedirs(exportPath)
-
-    progressBar.show("Converting Robot File", "Step 4: Creating Final Meshes...", 0, rootComp.occurrences.count, 0)
-    progressBar.progressValue = 0
-
-    for o in range(rootComp.occurrences.count):
-        try:
-            # STL
-            occ = rootComp.occurrences.item(o)
-            stlExport = design.exportManager.createSTLExportOptions(occ, exportPath + "/" + occ.name[:-2])
-            stlExport.meshRefinement = 2
-            stlExport.aspectRatio *= 10
-            stlExport.maximumEdgeLength *= 10
-            stlExport.normalDeviation *= 10
-            stlExport.surfaceDeviation *= 10
-            design.exportManager.execute(stlExport)
-            # XML
-            '''
-            link = root.createElement('link')
-            link.setAttribute('name', occ.name[:-2])
-            robot.appendChild(link)
-            vis = root.createElement('visual')
-            link.appendChild(vis)
-            geom = root.createElement('geometry')
-            vis.appendChild(geom)
-            mesh = root.createElement('mesh')
-            mesh.setAttribute('filename', 'package://' + app.activeDocument.name + '/' + occ.name[:-2] + ".stl")
-            geom.appendChild(mesh)
-            coll = root.createElement('collision')
-            link.appendChild(coll)
-            coll.appendChild(geom.cloneNode(deep=True))
-            '''
-            # Progress
-            progressBar.progressValue += 1
-        except:
-            # (Empty Occurrence)
-            # XML
-            '''
-            link = root.createElement('link')
-            link.setAttribute('name', occ.name[:-2])
-            robot.appendChild(link)
-            '''
-
-    progressBar.show("Converting Robot File", "Step 5: Finalizing URDF File...", 0, 1, 0)
-    progressBar.progressValue = 1
-
-    # Creates XML URDF File
-    root = minidom.Document()
-    robot = root.createElement('robot')
-    robot.setAttribute('name', app.activeDocument.name)
-    root.appendChild(robot)
-
-    attributes = root.createElement('attributes')
-    robot.appendChild(attributes)
-
-    # Adds Joints and their corresponding info
-    for revJoint in rootComp.joints:
-        if not revJoint.name.startswith('unityjoint_'):
-            continue
-        jntXML = root.createElement('joint')
-        jntXML.setAttribute('name', revJoint.name)
-        robot.appendChild(jntXML)
-        parent = root.createElement('parent')
-        parent.setAttribute('link', revJoint.occurrenceTwo.name[:-2])
-        jntXML.appendChild(parent)
-        child = root.createElement('child')
-        child.setAttribute('link', revJoint.occurrenceOne.name[:-2])
-        jntXML.appendChild(child)
-        axis = root.createElement('axis')
-        rotAxis = revJoint.jointMotion.rotationAxisVector
-        axis.setAttribute('xyz', str(rotAxis.x) + ' ' + str(rotAxis.y) + ' ' + str(rotAxis.z))
-        jntXML.appendChild(axis)
-        # Finds Origin of Joint
-        # <<Taken from Above Code>> (Should be modified into method for all to use)
-        jointsOcc = [None, revJoint.occurrenceTwo]
-        if not jointsOcc[1]:
-            jointsOcc[1] = rootComp
-        # Sets Correct Origin Based on Occurrence not Component (Also only 1 origin for offset purposes)
-        if revJoint.geometryOrOriginTwo.objectType == adsk.fusion.JointOrigin.classType():
-            joint = revJoint.geometryOrOriginTwo.geometry
-        else:
-            joint = revJoint.geometryOrOriginTwo
-        jointsOrigin = joint.origin
-        try:
-            if joint.entityOne.objectType == adsk.fusion.ConstructionPoint.classType():
-                baseComp = joint.entityOne.component
-            elif joint.entityOne.objectType == adsk.fusion.SketchPoint.classType():
-                baseComp = rootComp
-            else:
-                baseComp = joint.entityOne.body.parentComponent
-        except:
-            ui.messageBox("Whoops! It seems Joint: \"" + revJoint.name + "\" is connected to a currently not supported piece of Geometry! In a future update this may be fixed.")
-            joint.entityOne.body.parentComponent
-        baseComp = rootComp.allOccurrencesByComponent(baseComp).item(0)
-        if baseComp:
-            transform = baseComp.transform2
-            transform.invert()
-            transform.transformBy(jointsOcc[1].transform2)
-            jointsOrigin.transformBy(transform)
-        # <<Taken from Above Code>>
-        origin = root.createElement('origin')
-        origin.setAttribute('xyz', str(jointsOrigin.x) + " " + str(jointsOrigin.y) + " " + str(jointsOrigin.z))
-        jntXML.appendChild(origin)
-        # Revolute (Limited) or Continuous
-        if revJoint.jointMotion.rotationLimits.isMaximumValueEnabled:
-            jntXML.setAttribute('type', 'revolute')
-            limit = root.createElement('limit')
-            limit.setAttribute('upper', str(revJoint.jointMotion.rotationLimits.maximumValue))
-            limit.setAttribute('lower', str(revJoint.jointMotion.rotationLimits.minimumValue))
-            jntXML.appendChild(limit)
-        else:
-            jntXML.setAttribute('type', 'continuous')
-
-    # Adds Motors and their corresponding info
-    for motor in RobotConfig.configInfo["motors"]:
-        mtrXML = root.createElement('motor')
-        mtrXML.setAttribute('name', motor['name'])
-        robot.appendChild(mtrXML)
-        powered = root.createElement('powered')
-        # Finds Selected Joints and their info
-        if len(motor['joints']) > 0:
-            jointsStr = ""
-            for joint in motor['joints']:
-                for i in range(len(RobotConfig.listOfJoints)):
-                    if RobotConfig.listOfJoints[i][0] == joint:
-                        jointsStr += "unityjoint_" + str(i) + " "
-                        # Inverses Axis if set in Reverse
-                        if joint in motor['reverse']:
-                            for jntXML in root.getElementsByTagName('joint'):
-                                if jntXML.getAttribute('name') == "unityjoint_" + str(i):
-                                    axisNode = jntXML.getElementsByTagName('axis')[0]
-                                    axis = [float(i) for i in axisNode.getAttribute('xyz').split(' ')]
-                                    axisNode.setAttribute('xyz', str(-axis[0]) + ' ' + str(-axis[1]) + ' ' + str(-axis[2]))
-                                    break
-                        break
-            # Adds Joints to info
-            powered.setAttribute('joints', jointsStr[:-1])
-            mtrXML.appendChild(powered)
-        attributes = root.createElement('attributes')
-        attributes.setAttribute('gearRatio', str(motor['ratio']))
-        attributes.setAttribute('maxRPM', str(motor['maxRPM']))
-        attributes.setAttribute('encoderTicksPerRev', str(motor['ticksPerRev']))
-        mtrXML.appendChild(attributes)
-
-    # Adds Drivetrain Info
-    drivetrain = root.createElement('drivetrain')
-    robot.appendChild(drivetrain)
-    for wheelType, joints in RobotConfig.configInfo['drive_train'].items():
-        if len(joints) > 0:
-            wheelXML = root.createElement(wheelType)
-            jointsStr = ""
-            for joint in joints:
-                for i in range(len(RobotConfig.listOfJoints)):
-                    if RobotConfig.listOfJoints[i][0] == joint:
-                        jointsStr += "unityjoint_" + str(i) + " "
-            wheelXML.setAttribute('joints', jointsStr[:-1])
-            drivetrain.appendChild(wheelXML)
-
-    xml_string = root.toxml()
-
-    f = open(exportPath + "/robotFile.urdf", "w")
-    f.write(xml_string)
-    f.close()
-
-    app.activeDocument.save("")
-    progressBar.hide()
-    # Finally Exports Data
-    #design.exportManager.
-
-    ui.messageBox("Finished!")
     return False
