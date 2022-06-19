@@ -29,6 +29,8 @@ def run(context):
         # Opening Statement
         statement = '''Welcome to the Unity Exporter for the Virtual Robot Simulator!
 
+**MAKE SURE YOU HAVE ALREADY RIGGED UP JOINTS ON YOUR ROBOT BEFORE GOING THROUGH THIS PROCESS!**
+
 This AddOn will take your currently saved CAD File and convert it into an exportable file which can be uploaded to the Simulator.
 
 The First Phase is where you will be able to input info on motors, servos, and sensors which will be added onto the final file.
