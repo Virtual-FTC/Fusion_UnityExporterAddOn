@@ -70,6 +70,7 @@ def runMesh():
     assembledComps = [[]]
     _assembledComps = [rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())]
     _assembledComps[0].component.name = "unitycomp_0"
+    compJointLoc = [NULL]
 
     # Does Rigid Groups First
     if progressBar.wasCancelled:
@@ -102,6 +103,7 @@ def runMesh():
             # Stores Linked info into Arrays
             assembledComps.append(newCompNames)
             _assembledComps.append(newComp)
+            compJointLoc.append(NULL)
         if progressBar.wasCancelled:
             return True
         progressBar.progressValue += 1
@@ -135,6 +137,7 @@ def runMesh():
                 # Stores Linked info into Arrays
                 assembledComps.append(newCompNames)
                 _assembledComps.append(newComp)
+                compJointLoc.append(NULL)
         if progressBar.wasCancelled:
             return True
         progressBar.progressValue += 1
@@ -146,6 +149,7 @@ def runMesh():
         for revJoint in occ.joints:
             # Recreate Joints with "Free" JointOrigins
             if (revJoint.jointMotion.jointType == 1 and not revJoint.name.startswith("unityjoint_")):
+                currentSelectedOcc = NULL
                 if occs != rootComp:
                     revJoint = revJoint.createForAssemblyContext(occs)
                 jointOrigins = []
@@ -182,6 +186,7 @@ def runMesh():
                             continue
                         if jointsOcc[o].fullPathName in assembledComps[i]:
                             jointsComp.append(_assembledComps[i].component)
+                            currentSelectedOcc = i
                             break
                     else:
                         # (Section for Base Components)
@@ -191,17 +196,24 @@ def runMesh():
                                 if jointsOcc[1] == controlJoints.occurrenceOne:
                                     baseLink = False
                             if jointsOcc[1] == rootComp or baseLink:
+                                currentSelectedOcc = len(assembledComps)
                                 jointsComp.append(_assembledComps[0].component)
                                 if jointsOcc[1] == rootComp:
                                     assembledComps[0].append(jointsOcc[o].name)
                                 else:
                                     assembledComps[0].append(jointsOcc[o].fullPathName)
+                                compJointLoc.append(NULL)
                         else:
                             jointsComp.append(rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create()))
                             jointsComp[o].component.name = "unitycomp_" + str(len(assembledComps))
+                            currentSelectedOcc = len(assembledComps)
                             assembledComps.append([jointsOcc[o].fullPathName])
                             _assembledComps.append(jointsComp[o])
+                            compJointLoc.append(NULL)
                             jointsComp[o] = jointsComp[o].component
+                    # Sets Pivot Point
+                    if (o == 0):
+                        compJointLoc[currentSelectedOcc] = jointsOrigin
                     # Creates Point of Joint
                     pointInput = jointsComp[o].constructionPoints.createInput()
                     pointInput.setByPoint(jointsOrigin)
@@ -259,6 +271,15 @@ def runMesh():
     while rootComp.occurrences.item(0).name != "unitycomp_0:1":
         rootComp.occurrences.item(0).moveToComponent(_assembledComps[0])
     progressBar.progressValue += 1
+
+    # Resets PivotPoints
+    for i in range(len(assembledComps)):
+        pivotPoint = adsk.core.Matrix3D.create()
+        if (compJointLoc[i]):
+            compJointLoc[i] = compJointLoc[i].asVector()
+            compJointLoc[i].scaleBy(-1)
+            pivotPoint.setWithCoordinateSystem(compJointLoc[i].asPoint(), adsk.core.Vector3D.create(1, 0, 0), adsk.core.Vector3D.create(0, 1, 0), adsk.core.Vector3D.create(0, 0, 1))
+        _assembledComps[i].transform = pivotPoint
 
     UnityExporter.finalExport()
 

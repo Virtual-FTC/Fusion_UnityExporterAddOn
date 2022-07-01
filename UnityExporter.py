@@ -247,6 +247,7 @@ def finalExport():
     f.write(xml_string)
     f.close()
 
+    '''
     progressBar.show("Converting Robot File", "Step 5: Creating Final Meshes...", 0, rootComp.occurrences.count, 0)
     progressBar.progressValue = 0
 
@@ -265,11 +266,12 @@ def finalExport():
             progressBar.progressValue += 1
         except:
             pass
+    '''
 
     app.activeDocument.save("")
     progressBar.hide()
 
-    ui.messageBox("Finished!")
+    ui.messageBox("Finished!\nFinal Step: Go into options to export Robot as an FBX File.")
 
     return
 
