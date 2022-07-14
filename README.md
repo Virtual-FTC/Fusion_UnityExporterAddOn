@@ -1,7 +1,7 @@
 # Fusion_UnityExporterAddOn
 A script for Fusion to be able to export your files into Unity during runtime
 
-If it works corrctly-it looks like this https://www.youtube.com/watch?v=cEdA5ly43to
+If it works correctly-it looks like this https://www.youtube.com/watch?v=cEdA5ly43to
 
 How to install an add-in or script in Fusion 360.  https://knowledge.autodesk.com/support/fusion-360/troubleshooting/caas/sfdcarticles/sfdcarticles/How-to-install-an-ADD-IN-and-Script-in-Fusion-360.html
 
