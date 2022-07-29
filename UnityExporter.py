@@ -68,6 +68,7 @@ If you experience any issues, feel free to reach out!
         product = app.activeProduct
         design = adsk.fusion.Design.cast(product)
         design.designType = 0
+        design.fusionUnitsManager.distanceDisplayUnits = 0
 
         # Register the custom event and connect the handler.
         global customEvent
