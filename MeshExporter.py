@@ -3,7 +3,9 @@
 from asyncio.windows_events import NULL
 from email.mime import application, base
 from pickle import TRUE
+from xml.dom import minidom
 import adsk.core, adsk.fusion, traceback
+from . import UnityExporter
 
 
 # Recursively travels through assemblies and stores all assemblies with joint info
@@ -22,54 +24,30 @@ def findJointAssemblies(occurrences):
 
     return assemblyOcc
 
-
-# Recursively travels through assemblies moving components to new _UnityComp_ Components
-def traverseAssembly(occurrences, assembledComps, _assembledComps, progressBar, rootComp):
-    if rootComp:
-        progressBar.show("Converting Robot File", "Step 2: Combining Components...", 0, occurrences.count - len(assembledComps), 0)
-        progressBar.progressValue = 0
-        # Specific Loop for RootComp Bodies
-        while rootComp.bRepBodies.count > 0:
-            if rootComp.bRepBodies.item(0).volume > 1.5:
-                rootComp.bRepBodies.item(0).copyToComponent(_assembledComps[0])
-            rootComp.bRepBodies.item(0).deleteMe()
-    # Loops through Occurrences
-    o = 0
-    while o < occurrences.count:
-        occ = occurrences.item(o)
-
-        if occ.name == "_UnityComp_0:1":
+# Recursively travels through assemblies deleting small bodies
+def removeSmallInAssembly(occurrences, progressBar, rootComp):
+    for occ in occurrences:
+        if occ.name == "unitycomp_0:1":
             return
+        
+        #box = occ.boundingBox
+        #size = (box.maxPoint.x - box.minPoint.x) * (box.maxPoint.y - box.minPoint.y) * (box.maxPoint.z - box.minPoint.z)
+        #if size < 7.5:
+        #    occ.deleteMe()
+        if occ.component.physicalProperties.volume < 1.5:
+            occ.isLightBulbOn = False
 
-        unityComp = _assembledComps[0]
-        for i in range(1, len(assembledComps)):
-            if occ.fullPathName in assembledComps[i]:
-                unityComp = _assembledComps[i]
-                break
 
-        if occ.childOccurrences:
-            traverseAssembly(occ.childOccurrences, assembledComps, _assembledComps, progressBar, None)
+        elif occ.childOccurrences:
+                removeSmallInAssembly(occ.childOccurrences, None, rootComp)
 
-        for body in occ.bRepBodies:
-            if body.volume > 1.5:
-                body.copyToComponent(unityComp)
-
-        if progressBar.wasCancelled:
-            return
-
-        # Updates List
-        if rootComp:
-            occ.deleteMe()
-            occurrences = rootComp.occurrences.asList
+        if progressBar:
             progressBar.progressValue += 1
-        else:
-            o += 1
 
 
 def runMesh():
     app = adsk.core.Application.get()
     ui = app.userInterface
-
 
     # Get the root component of the active design
     product = app.activeProduct
@@ -91,7 +69,7 @@ def runMesh():
     # (First Assembled Group is Base Group)
     assembledComps = [[]]
     _assembledComps = [rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())]
-    _assembledComps[0].component.name = "_UnityComp_0"
+    _assembledComps[0].component.name = "unitycomp_0"
 
     # Does Rigid Groups First
     if progressBar.wasCancelled:
@@ -106,7 +84,7 @@ def runMesh():
                 rg = rg.createForAssemblyContext(occs)
             # New Component per RigidGroup
             newComp = rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
-            newComp.component.name = "_UnityComp_" + str(len(assembledComps))
+            newComp.component.name = "unitycomp_" + str(len(assembledComps))
             newCompNames = []
             for o in range(rg.occurrences.count):
                 occRG = rg.occurrences.item(o)
@@ -140,7 +118,7 @@ def runMesh():
                 # -Repeat of RigidGroup Code-
                 # New Component per Rigid Joint
                 newComp = rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
-                newComp.component.name = "_UnityComp_" + str(len(assembledComps))
+                newComp.component.name = "unitycomp_" + str(len(assembledComps))
                 newCompNames = []
                 for occRG in jointsOcc:
                     for i in range(len(assembledComps)):
@@ -162,11 +140,12 @@ def runMesh():
         progressBar.progressValue += 1
 
     # Does Revolve Joints Last
+    jointCount = 0
     for occs in assemblyOcc:
         occ = occs if occs == rootComp else occs.component
         for revJoint in occ.joints:
             # Recreate Joints with "Free" JointOrigins
-            if (revJoint.jointMotion.jointType == 1 and not revJoint.name.startswith("_UnityJoint")):
+            if (revJoint.jointMotion.jointType == 1 and not revJoint.name.startswith("unityjoint_")):
                 if occs != rootComp:
                     revJoint = revJoint.createForAssemblyContext(occs)
                 jointOrigins = []
@@ -206,15 +185,20 @@ def runMesh():
                             break
                     else:
                         # (Section for Base Components)
-                        if o == 1 and (jointsOcc[1] == rootComp or jointsOcc[1].nativeObject.joints.count < 2):
-                            jointsComp.append(_assembledComps[0].component)
-                            if jointsOcc[1] == rootComp:
-                                assembledComps[0].append(jointsOcc[o].name)
-                            else:
-                                assembledComps[0].append(jointsOcc[o].fullPathName)
+                        if o == 1:
+                            baseLink = True
+                            for controlJoints in jointsOcc[1].nativeObject.joints:
+                                if jointsOcc[1] == controlJoints.occurrenceOne:
+                                    baseLink = False
+                            if jointsOcc[1] == rootComp or baseLink:
+                                jointsComp.append(_assembledComps[0].component)
+                                if jointsOcc[1] == rootComp:
+                                    assembledComps[0].append(jointsOcc[o].name)
+                                else:
+                                    assembledComps[0].append(jointsOcc[o].fullPathName)
                         else:
                             jointsComp.append(rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create()))
-                            jointsComp[o].component.name = "_UnityComp_" + str(len(assembledComps))
+                            jointsComp[o].component.name = "unitycomp_" + str(len(assembledComps))
                             assembledComps.append([jointsOcc[o].fullPathName])
                             _assembledComps.append(jointsComp[o])
                             jointsComp[o] = jointsComp[o].component
@@ -245,59 +229,37 @@ def runMesh():
                 jointInput.jointMotion.rotationLimits.minimumValue = revJoint.jointMotion.rotationLimits.minimumValue
                 jointInput.jointMotion.rotationLimits.restValue = revJoint.jointMotion.rotationLimits.restValue
                 # Adds New Rev Joint
-                rootComp.joints.add(jointInput).name = "_UnityJoint"
+                rootComp.joints.add(jointInput).name = "unityjoint_" + str(jointCount)
+                jointCount += 1
         if progressBar.wasCancelled:
             return True
         progressBar.progressValue += 2
     app.activeViewport.refresh()
 
-
-    # Big Loop of all Components to put into Linked _UnityComp_ Components
-    traverseAssembly(rootComp.occurrences.asList, assembledComps, _assembledComps, progressBar, rootComp)
-    app.activeViewport.refresh()
-    if progressBar.wasCancelled:
-        return True
-
-
-    # Meshes and combines all bodies in Components
-    progressBar.show("Converting Robot File", "Step 3: Creating Final Meshes...", 0, rootComp.occurrences.count * 2, 0)
+    # Remove Small Bodies
+    progressBar.show("Converting Robot File", "Step 2: Removing Small Bodies...", 0, rootComp.occurrences.count - len(assembledComps), 0)
     progressBar.progressValue = 0
-    select = ui.activeSelections
+    removeSmallInAssembly(rootComp.occurrences.asList, progressBar, rootComp)
 
-    # Loops through Occurrences
-    for o in range(rootComp.occurrences.count):
-        occ = rootComp.occurrences.item(o)
-        select.clear()
-
-        # Creates Low Quality Meshes from Bodies
-        txtCmds = ['Commands.Start ParaMeshTessellateCommand', 'NuCommands.CommitCmd']
-        for bod in occ.component.bRepBodies:
-            select.add(bod.createForAssemblyContext(rootComp.allOccurrences[o]))
-        app.executeTextCommand(txtCmds[0])
-        app.executeTextCommand(txtCmds[1])
+    # Meshing Code
+    progressBar.show("Converting Robot File", "Step 3: Combining Occurrences...", 0, len(assembledComps), 0)
+    progressBar.progressValue = 0
+    for i in range(1, len(assembledComps)):
+        for c in range(len(assembledComps[i])):
+            childOccs = rootComp.occurrences
+            location = assembledComps[i][c].split('+')
+            for occName in location:
+                newOcc = childOccs.itemByName(occName)
+                if not newOcc:
+                    break
+                childOccs = newOcc.childOccurrences
+            if newOcc:
+                newOcc.moveToComponent(_assembledComps[i])
         progressBar.progressValue += 1
-        app.activeViewport.refresh()
-        if progressBar.wasCancelled:
-            return True
+    while rootComp.occurrences.item(0).name != "unitycomp_0:1":
+        rootComp.occurrences.item(0).moveToComponent(_assembledComps[0])
+    progressBar.progressValue += 1
 
-        # Reduces Mesh to Lower Quality
-        txtCmds = ['Commands.Start ParaMeshReduceCommand', 'Commands.setDouble infoReduceProportion 10', 'NuCommands.CommitCmd']
-        if o == 0:
-            txtCmds = ['Commands.Start ParaMeshReduceCommand', 'Commands.setDouble infoReduceProportion 5', 'NuCommands.CommitCmd']
-        for bod in occ.component.meshBodies:
-            select.add(bod.createForAssemblyContext(rootComp.allOccurrences[o]))
-            for cmd in txtCmds:
-                app.executeTextCommand(cmd)
-        progressBar.progressValue += 1
-        app.activeViewport.refresh()
-        if progressBar.wasCancelled:
-            return True
+    UnityExporter.finalExport()
 
-    app.activeDocument.save("")
-    progressBar.hide()
-    #adsk.terminate()
-    # Finally Exports Data
-    #design.exportManager.
-
-    ui.messageBox("Finished!")
     return False
