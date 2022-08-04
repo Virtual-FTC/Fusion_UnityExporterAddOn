@@ -1,27 +1,22 @@
-#Author-
-#Description-
+#Author- VRS Team
+#Description- Fusion Exporter to import files into Unity for the VRS
 
 import os
-from pydoc import doc
 from xml.dom import minidom
 import adsk.core, adsk.fusion, adsk.cam, traceback
 
-from . import RobotConfig
 from . import MeshExporter
 
 app = None
 ui = adsk.core.UserInterface.cast(None)
-customEventID = 'Phase2-MeshThread'
-customEvent = None
 
 _handlers = []
 
 docName = ""
 
-        
+# Starting Function
 def run(context):
-    global ui
-    global app
+    global app, ui
     try:
         app = adsk.core.Application.get()
         ui  = app.userInterface
@@ -29,23 +24,22 @@ def run(context):
         # Opening Statement
         statement = '''Welcome to the Unity Exporter for the Virtual Robot Simulator!
 
-**MAKE SURE YOU HAVE ALREADY RIGGED UP JOINTS ON YOUR ROBOT BEFORE GOING THROUGH THIS PROCESS!**
+If you experience any issues, feel free to reach out!'''
 
-This AddOn will take your currently saved CAD File and convert it into an exportable file which can be uploaded to the Simulator.
-
-The First Phase is where you will be able to input info on motors, servos, and sensors which will be added onto the final file.
-
-The Second Phase will convert your CAD File into a simplified mesh for quicker upload speeds.
-
-Finally, the exportable file will be available which you can then upload to the Virtual Robot Simulator where Game Element specific info can be added and saved as well.
-
-If you experience any issues, feel free to reach out!
-                    '''
-
-        results = ui.messageBox(statement, "UNITY EXPORTER INFO", 1)
+        results = ui.messageBox(statement, "UNITY EXPORTER", 1)
         if results == 1:
+            ui.messageBox("Cancelled Task")
+            adsk.terminate()
             return
 
+        # Opening Statement
+        statement = '''Before hitting "OK", be sure that your robot has all included joints!'''
+
+        results = ui.messageBox(statement, "IMPORTANT INFO", 1)
+        if results == 1:
+            ui.messageBox("Cancelled Task")
+            adsk.terminate()
+            return
 
         # Creates Progress Bar
         progressBar = ui.createProgressDialog()
@@ -58,7 +52,7 @@ If you experience any issues, feel free to reach out!
                 app.activeDocument.dataFile.parentFolder.dataFiles.item(i).deleteMe()
                 break
 
-        #Clone Current Document
+        #Clone Current Document (Todo: Remove cloning *safely*)
         global docName
         docName = app.activeDocument.name
         data_orig = app.activeDocument.dataFile.copy(app.activeDocument.dataFile.parentFolder)
@@ -68,54 +62,127 @@ If you experience any issues, feel free to reach out!
         product = app.activeProduct
         design = adsk.fusion.Design.cast(product)
         design.designType = 0
+        design.fusionUnitsManager.distanceDisplayUnits = 0
 
-        # Register the custom event and connect the handler.
-        global customEvent
-        customEvent = app.registerCustomEvent(customEventID)
-        onThreadEvent = ConfigDone()
-        customEvent.add(onThreadEvent)
-        _handlers.append(onThreadEvent)
+        progressBar.hide()
 
-        adsk.autoTerminate(False)
-
-        # Runs PHASE ONE Script
-        RobotConfig.runConfig()
-        #app.fireCustomEvent(customEventID, '') 
-    except:
-        if ui:
-            ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+        # Meshing Function
+        cancelled = MeshExporter.runMesh()
+        if cancelled:
+            ui.messageBox("Cancelled Task")
             adsk.terminate()
+            return
+
+        # Next step: Select Wheels (This is created here to save global variables)
+        ui.messageBox("Select the Wheel Components on the Robot", "Almost Finished!")
+
+        # Get the existing command definition or create it if it doesn't already exist.
+        cmdDef = ui.commandDefinitions.itemById('cmdWheelsConfig')
+        if not cmdDef:
+            cmdDef = ui.commandDefinitions.addButtonDefinition('cmdWheelsConfig', 'Configure Wheels', 'Select Wheels to save into Unity.')
+
+        # Connect to the command created event.
+        onCommandCreated = MyCommandCreatedHandler()
+        cmdDef.commandCreated.add(onCommandCreated)
+        _handlers.append(onCommandCreated)
+
+        # Execute the command definition.
+        cmdDef.execute()
+
+        # Prevent this module from being terminated when the script returns, because we are waiting for event handlers to fire.
+        adsk.autoTerminate(False)
+    except:
+        ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+        adsk.terminate()
 
 
-# The event handler that responds to the custom event being fired.
-# This is in order to run config back on the main thread
-class ConfigDone(adsk.core.CustomEventHandler):
+
+# Event handler that reacts when the command definition is executed which
+# results in the command being created and this event being fired.
+class MyCommandCreatedHandler(adsk.core.CommandCreatedEventHandler):
     def __init__(self):
         super().__init__()
     def notify(self, args):
         try:
-            #return
-            # Runs PHASE TWO Script
-            cancelled = MeshExporter.runMesh()
-            if cancelled:
-                ui.messageBox("Successfully Cancelled Task")
-            adsk.terminate()
+            # Get the command that was created.
+            cmd = adsk.core.Command.cast(args.command)
+
+            # Connect to the command destroyed event.
+            onDestroy = MyCommandDestroyHandler()
+            cmd.destroy.add(onDestroy)
+            _handlers.append(onDestroy)
+
+            # Connect to command completed event.
+            onExecute = MyExecuteHandler()
+            cmd.execute.add(onExecute)
+            _handlers.append(onExecute)
+
+            # Get the CommandInputs collection associated with the command.
+            inputs = cmd.commandInputs
+
+            # Add Wheel Selector
+            selector = inputs.addSelectionInput('wheels', 'Wheel Components', 'Select Components that contain a Wheel')
+            selector.setSelectionLimits(0)
+            selector.addSelectionFilter("Occurrences")
         except:
-            if ui:
-                ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+            ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+            adsk.terminate()
 
-def finalExport():
-    global docName, app, ui
-    app = adsk.core.Application.get()
-    ui  = app.userInterface
+# Event handler that reacts to when the command is destroyed. This terminates the script.            
+class MyCommandDestroyHandler(adsk.core.CommandEventHandler):
+    def __init__(self):
+        super().__init__()
+    def notify(self, args):
+        ui.messageBox("Cancelled Task")
+        adsk.terminate()
 
-    # DocName does not save past RobotConfig UI system
-    if not docName:
-        docName = app.activeDocument.name
+# Event handler for the execute event.
+class MyExecuteHandler(adsk.core.CommandEventHandler):
+    def __init__(self):
+        super().__init__()
+    def notify(self, args):
+        try:
+            # Removes Menu
+            cmd = adsk.core.Command.cast(args.command)
+            cmd.destroy.remove(_handlers[1])
+            cmd.execute.remove(_handlers[2])
+
+            # Bug: CmdDef can't be deleted
+            cmd.parentCommandDefinition.deleteMe()
+
+            # Returns Data
+            selector = adsk.core.Command.cast(args.command).commandInputs.item(0)
+
+            wheelOcc = [selector.selection(i).entity.fullPathName.split('+')[0] for i in range(selector.selectionCount)]
+
+            selector.isVisible = False
+            selector.isEnabled = False
+            selector.deleteMe()
+
+            finalExport(wheelOcc)
+        except:
+            ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+            adsk.terminate()
+
+
+
+# Export Function for URDF and STL Files
+def finalExport(wheelOccNames = []):
+    global app, ui, docName
+
+    product = app.activeProduct
+    design = adsk.fusion.Design.cast(product)
+    rootComp = design.rootComponent
 
     progressBar = ui.createProgressDialog()
     progressBar.show("Converting Robot File", "Step 4: Creating URDF File...", 0, 1, 0)
     progressBar.progressValue = 1
+    app.activeViewport.refresh()
+    adsk.doEvents()
+
+    # Hides Wheel Occurrences
+    for name in wheelOccNames:
+        rootComp.occurrences.itemByName(name).isLightBulbOn = False
 
     # Creates XML URDF File
     root = minidom.Document()
@@ -123,12 +190,22 @@ def finalExport():
     robot.setAttribute('name', docName)
     root.appendChild(robot)
 
-    product = app.activeProduct
-    design = adsk.fusion.Design.cast(product)
-    rootComp = design.rootComponent
-
     attributes = root.createElement('attributes')
+    point = rootComp.boundingBox.maxPoint
+    boxStr = str(point.x) + " " + str(point.y) + " " + str(point.z)
+    point = rootComp.boundingBox.minPoint
+    boxStr += ", " + str(point.x) + " " + str(point.y) + " " + str(point.z)
+    attributes.setAttribute('boundingBox', boxStr)
     robot.appendChild(attributes)
+
+    # Adds Links just for mass reading purposes
+    for occ in rootComp.occurrences:
+        lnkXML = root.createElement('link')
+        lnkXML.setAttribute('name', occ.name[:-2])
+        robot.appendChild(lnkXML)
+        massXML = root.createElement('mass')
+        massXML.setAttribute('value', str(occ.physicalProperties.mass))
+        lnkXML.appendChild(massXML)
 
     # Adds Joints and their corresponding info
     for revJoint in rootComp.joints:
@@ -148,46 +225,16 @@ def finalExport():
         axis.setAttribute('xyz', str(rotAxis.x) + ' ' + str(rotAxis.y) + ' ' + str(rotAxis.z))
         jntXML.appendChild(axis)
         # Finds Origin of Joint
-        # <<Taken from Mesh Exporter>> (Should be modified into method for all to use)
-        jointsOcc = [None, revJoint.occurrenceTwo]
-        if not jointsOcc[1]:
-            jointsOcc[1] = rootComp
-        # Sets Correct Origin Based on Occurrence not Component (Also only 1 origin for offset purposes)
-        if revJoint.geometryOrOriginTwo.objectType == adsk.fusion.JointOrigin.classType():
-            joint = revJoint.geometryOrOriginTwo.geometry
-        else:
-            joint = revJoint.geometryOrOriginTwo
-        jointsOrigin = joint.origin
-        try:
-            if joint.entityOne.objectType == adsk.fusion.ConstructionPoint.classType():
-                baseComp = joint.entityOne.component
-            elif joint.entityOne.objectType == adsk.fusion.SketchPoint.classType():
-                baseComp = rootComp
-            else:
-                baseComp = joint.entityOne.body.parentComponent
-        except:
-            ui.messageBox("Whoops! It seems Joint: \"" + revJoint.name + "\" is connected to a currently not supported piece of Geometry! In a future update this may be fixed.")
-            joint.entityOne.body.parentComponent
-        baseComp = rootComp.allOccurrencesByComponent(baseComp).item(0)
-        if baseComp:
-            transform = baseComp.transform2
-            transform.invert()
-            transform.transformBy(jointsOcc[1].transform2)
-            jointsOrigin.transformBy(transform)
-        # <<Taken from Mesh Exporter>>
+        jointsOrigin = MeshExporter.jointOriginWorldSpace(revJoint, rootComp)
         origin = root.createElement('origin')
         origin.setAttribute('xyz', str(jointsOrigin.x) + " " + str(jointsOrigin.y) + " " + str(jointsOrigin.z))
         jntXML.appendChild(origin)
         # Checks if a wheel joint
-        for wheeltype, joints in RobotConfig.configInfo["drive_train"].items():
-            for jntConfig in joints:
-                if revJoint.name == "unityjoint_" + str(jntConfig):
-                    wheelXML = root.createElement('wheel')
-                    wheelXML.setAttribute('type', wheeltype)
-                    jntXML.appendChild(wheelXML)
-                    revJoint.occurrenceOne.component.name = "wheel_" + revJoint.occurrenceOne.name[10:-2]
-                    child.setAttribute('link', revJoint.occurrenceOne.name[:-2])
-                    break
+        if not revJoint.occurrenceOne.isLightBulbOn:
+            wheelXML = root.createElement('wheel')
+            wheelXML.setAttribute('type', '')
+            wheelXML.setAttribute('offset', '0')
+            jntXML.appendChild(wheelXML)
         # Revolute (Limited) or Continuous
         if revJoint.jointMotion.rotationLimits.isMaximumValueEnabled:
             jntXML.setAttribute('type', 'revolute')
@@ -198,33 +245,7 @@ def finalExport():
         else:
             jntXML.setAttribute('type', 'continuous')
 
-    # Adds Motors and their corresponding info
-    for motor in RobotConfig.configInfo["motors"]:
-        mtrXML = root.createElement('motor')
-        mtrXML.setAttribute('name', motor['name'])
-        robot.appendChild(mtrXML)
-        powered = root.createElement('powered')
-        # Finds Selected Joints and their info
-        if len(motor['joints']) > 0:
-            jointsStr = ""
-            for joint in motor['joints']:
-                jointsStr += "unityjoint_" + str(joint) + " "
-                # Inverses Axis if set in Reverse
-                if joint in motor['reverse']:
-                    for jntXML in root.getElementsByTagName('joint'):
-                        if jntXML.getAttribute('name') == "unityjoint_" + str(joint):
-                            axisNode = jntXML.getElementsByTagName('axis')[0]
-                            axis = [float(i) for i in axisNode.getAttribute('xyz').split(' ')]
-                            axisNode.setAttribute('xyz', str(-axis[0]) + ' ' + str(-axis[1]) + ' ' + str(-axis[2]))
-                            break
-            # Adds Joints to info
-            powered.setAttribute('joints', jointsStr[:-1])
-            mtrXML.appendChild(powered)
-        attributes = root.createElement('attributes')
-        attributes.setAttribute('gearRatio', str(motor['ratio']))
-        attributes.setAttribute('maxRPM', str(motor['maxRPM']))
-        attributes.setAttribute('encoderTicksPerRev', str(motor['ticksPerRev']))
-        mtrXML.appendChild(attributes)
+        # --ADD SLIDER JOINTS AND MOTION LINKS--
 
     # Store Meshes
     ui.messageBox("Select Location to Store Folder of Robot Data", "Almost Finished!")
@@ -234,6 +255,8 @@ def finalExport():
     dlgResults = folderDia.showDialog()
 
     if dlgResults != 0:
+        ui.messageBox("Cancelled Task")
+        adsk.terminate()
         return
 
     exportPath = folderDia.folder + "/" + docName
@@ -269,16 +292,5 @@ def finalExport():
     app.activeDocument.save("")
     progressBar.hide()
 
-    ui.messageBox("Finished!")
-
-    return
-
-# Clean up Handlers
-def stop(context):
-    try:
-        app.unregisterCustomEvent(customEventID)
-        if _handlers.count:
-            customEvent.remove(_handlers[0])
-    except:
-        if ui:
-            ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
+    ui.messageBox('Check the folder "' + exportPath + '" for your finalized robot!', "Finished!")
+    adsk.terminate()
