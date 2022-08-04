@@ -1,12 +1,10 @@
-# PHASE TWO SCRIPT - Creates reduced mesh from current robot file
+# Creates seperate meshes from joint info
 
-from asyncio.windows_events import NULL
-from email.mime import application, base
 from pickle import TRUE
-from xml.dom import minidom
-import adsk.core, adsk.fusion, traceback
-from . import UnityExporter
+import adsk.core, adsk.fusion
 
+app = None
+ui = adsk.core.UserInterface.cast(None)
 
 # Recursively travels through assemblies and stores all assemblies with joint info
 def findJointAssemblies(occurrences):
@@ -25,27 +23,47 @@ def findJointAssemblies(occurrences):
     return assemblyOcc
 
 # Recursively travels through assemblies deleting small bodies
-def removeSmallInAssembly(occurrences, progressBar, rootComp):
+def removeSmallInAssembly(baseSize, occurrences):
     for occ in occurrences:
-        if occ.name == "unitycomp_0:1":
-            return
         
-        #box = occ.boundingBox
-        #size = (box.maxPoint.x - box.minPoint.x) * (box.maxPoint.y - box.minPoint.y) * (box.maxPoint.z - box.minPoint.z)
-        #if size < 7.5:
-        #    occ.deleteMe()
-        if occ.component.physicalProperties.volume < 1.5:
+        if occ.component.physicalProperties.volume < 1.5 and occ.component.physicalProperties.volume < baseSize / 2:
             occ.isLightBulbOn = False
 
-
         elif occ.childOccurrences:
-                removeSmallInAssembly(occ.childOccurrences, None, rootComp)
+                removeSmallInAssembly(baseSize, occ.childOccurrences)
 
-        if progressBar:
-            progressBar.progressValue += 1
-
+# Return Origin of Joint in World Space
+def jointOriginWorldSpace(revJoint, rootComp):
+    jointsOcc = revJoint.occurrenceTwo
+    if not jointsOcc:
+        jointsOcc = rootComp
+    # Sets Correct Origin Based on Occurrence not Component (Also only 1 origin for offset purposes)
+    if revJoint.geometryOrOriginTwo.objectType == adsk.fusion.JointOrigin.classType():
+        joint = revJoint.geometryOrOriginTwo.geometry
+    else:
+        joint = revJoint.geometryOrOriginTwo
+    jointsOrigin = joint.origin
+    try:
+        if joint.entityOne.objectType == adsk.fusion.ConstructionPoint.classType():
+            baseComp = joint.entityOne.component
+        elif joint.entityOne.objectType == adsk.fusion.SketchPoint.classType():
+            baseComp = rootComp
+        else:
+            baseComp = joint.entityOne.body.parentComponent
+    except:
+        ui.messageBox("Whoops! It seems Joint: \"" + revJoint.name + "\" is connected to a currently not supported piece of Geometry! In a future update this may be fixed.")
+        joint.entityOne.body.parentComponent
+    baseComp = rootComp.allOccurrencesByComponent(baseComp).item(0)
+    if baseComp:
+        transform = baseComp.transform2
+        transform.invert()
+        transform.transformBy(jointsOcc.transform2)
+        jointsOrigin.transformBy(transform)
+    return jointsOrigin
 
 def runMesh():
+    global app, ui
+
     app = adsk.core.Application.get()
     ui = app.userInterface
 
@@ -153,28 +171,7 @@ def runMesh():
                 if not jointsOcc[1]:
                     jointsOcc[1] = rootComp
                 jointsComp = []
-                # Sets Correct Origin Based on Occurrence not Component (Also only 1 origin for offset purposes)
-                if revJoint.geometryOrOriginTwo.objectType == adsk.fusion.JointOrigin.classType():
-                    joint = revJoint.geometryOrOriginTwo.geometry
-                else:
-                    joint = revJoint.geometryOrOriginTwo
-                jointsOrigin = joint.origin
-                try:
-                    if joint.entityOne.objectType == adsk.fusion.ConstructionPoint.classType():
-                        baseComp = joint.entityOne.component
-                    elif joint.entityOne.objectType == adsk.fusion.SketchPoint.classType():
-                        baseComp = rootComp
-                    else:
-                        baseComp = joint.entityOne.body.parentComponent
-                except:
-                    ui.messageBox("Whoops! It seems Joint: \"" + revJoint.name + "\" is connected to a currently not supported piece of Geometry! In a future update this may be fixed.")
-                    joint.entityOne.body.parentComponent
-                baseComp = rootComp.allOccurrencesByComponent(baseComp).item(0)
-                if baseComp:
-                    transform = baseComp.transform2
-                    transform.invert()
-                    transform.transformBy(jointsOcc[1].transform2)
-                    jointsOrigin.transformBy(transform)
+                jointsOrigin = jointOriginWorldSpace(revJoint, rootComp)
                 for o in range(2):
                     # Creates Unlinked Components
                     for i in range(len(assembledComps)):
@@ -217,8 +214,6 @@ def runMesh():
                     originInput.zAxisEntity = jointLine
                     jointOrigins.append(jointsComp[o].jointOrigins.add(originInput))
                 # Sets Joint Origin to be new Link
-                #rootComp.joints.item(j).geometryOrOriginOne = jointOrigins[0]
-                #rootComp.joints.item(j).geometryOrOriginTwo = jointOrigins[1]
                 jointInput = rootComp.joints.createInput(jointOrigins[0], jointOrigins[1])
                 jointInput.setAsRevoluteJointMotion(revJoint.jointMotion.rotationAxis)
                 # Transfers Data
@@ -236,13 +231,8 @@ def runMesh():
         progressBar.progressValue += 2
     app.activeViewport.refresh()
 
-    # Remove Small Bodies
-    progressBar.show("Converting Robot File", "Step 2: Removing Small Bodies...", 0, rootComp.occurrences.count - len(assembledComps), 0)
-    progressBar.progressValue = 0
-    removeSmallInAssembly(rootComp.occurrences.asList, progressBar, rootComp)
-
     # Meshing Code
-    progressBar.show("Converting Robot File", "Step 3: Combining Occurrences...", 0, len(assembledComps), 0)
+    progressBar.show("Converting Robot File", "Step 2: Combining Occurrences...", 0, len(assembledComps), 0)
     progressBar.progressValue = 0
     for i in range(1, len(assembledComps)):
         for c in range(len(assembledComps[i])):
@@ -260,6 +250,13 @@ def runMesh():
         rootComp.occurrences.item(0).moveToComponent(_assembledComps[0])
     progressBar.progressValue += 1
 
-    UnityExporter.finalExport()
+    # Remove Small Bodies
+    progressBar.show("Converting Robot File", "Step 3: Removing Small Bodies...", 0, len(assembledComps), 0)
+    progressBar.progressValue = 0
+    for occ in _assembledComps:
+        if occ.isValid:
+            removeSmallInAssembly(occ.physicalProperties.volume, occ.childOccurrences)
+        progressBar.progressValue += 1
 
+    progressBar.hide()
     return False

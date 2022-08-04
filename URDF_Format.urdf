@@ -1,0 +1,15 @@
+<?xml version="1.0" ?>
+<robot name="_name_">
+	<attributes boundingBox="+x +y +z, -x -y -z"/>
+	<link name="unitycomp_#">
+		<mass value="#">
+	</link>
+	<joint name="unityjoint_#" type="continuous"/"revolute">
+		<parent link="unitycomp_#"/>
+		<child link="unitycomp_#"/>
+		<axis xyz="x y z"/>
+		<origin xyz="z y z"/>
+         <wheel type="" offset="0"/>
+         <limits lower="_radians_" upper="_radians_"/>
+	</joint>
+</robot>
