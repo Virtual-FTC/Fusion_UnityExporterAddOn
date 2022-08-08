@@ -1,10 +1,15 @@
 # Creates seperate meshes from joint info
 
+from email.mime import base
 from pickle import TRUE
 import adsk.core, adsk.fusion
 
+from . import UnityExporter
+
 app = None
 ui = adsk.core.UserInterface.cast(None)
+
+jointOccs = {}
 
 # Recursively travels through assemblies and stores all assemblies with joint info
 def findJointAssemblies(occurrences):
@@ -12,6 +17,9 @@ def findJointAssemblies(occurrences):
 
     for i in range(0, occurrences.count):
         occ = occurrences.item(i)
+
+        if occ.isReferencedComponent:
+            occ.breakLink()
 
         if occ.childOccurrences:
             if occ.component.joints.count > 0 or occ.component.rigidGroups.count > 0:
@@ -33,15 +41,23 @@ def removeSmallInAssembly(baseSize, occurrences):
                 removeSmallInAssembly(baseSize, occ.childOccurrences)
 
 # Return Origin of Joint in World Space
-def jointOriginWorldSpace(revJoint, rootComp):
+def jointOriginWorldSpace(revJoint):
+    product = app.activeProduct
+    design = adsk.fusion.Design.cast(product)
+    rootComp = design.rootComponent
+
     jointsOcc = revJoint.occurrenceTwo
     if not jointsOcc:
         jointsOcc = rootComp
     # Sets Correct Origin Based on Occurrence not Component (Also only 1 origin for offset purposes)
-    if revJoint.geometryOrOriginTwo.objectType == adsk.fusion.JointOrigin.classType():
-        joint = revJoint.geometryOrOriginTwo.geometry
-    else:
+    try:
         joint = revJoint.geometryOrOriginTwo
+    except: # May not have geometryTwo
+        jointsOcc = revJoint.occurrenceOne
+        joint = revJoint.geometryOrOriginOne
+    app.activeViewport.refresh()
+    if joint.objectType == adsk.fusion.JointOrigin.classType():
+        joint = joint.geometry
     jointsOrigin = joint.origin
     try:
         if joint.entityOne.objectType == adsk.fusion.ConstructionPoint.classType():
@@ -61,7 +77,41 @@ def jointOriginWorldSpace(revJoint, rootComp):
         jointsOrigin.transformBy(transform)
     return jointsOrigin
 
-def runMesh():
+# Rigid Combination
+def rigidOccs(occs, assembledComps, _assembledComps, rootComp):
+    # New Component per Rigid Joint or absorb into other Group
+    newCompNames = []
+    grounded = False
+    for occRG in occs:
+        if occRG.isGrounded:
+            grounded = True
+        for i in range(len(assembledComps)):
+            # If Comp Already in Link, Absorb Previous Linked Components into One
+            if occRG.fullPathName in assembledComps[i]:
+                if i == 0:
+                    grounded = True
+                    break
+                for compName in assembledComps[i]:
+                    newCompNames.append(compName)
+                assembledComps[i] = []
+                _assembledComps[i].deleteMe()
+                break
+        # Else, Create Link for New Component
+        else:
+            newCompNames.append(occRG.fullPathName)
+    # Stores Linked info into Arrays
+    if grounded:
+        assembledComps[0].extend(newCompNames)
+    else:
+        newComp = rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+        newComp.component.name = "unitycomp_" + str(len(assembledComps))
+        assembledComps.append(newCompNames)
+        _assembledComps.append(newComp)
+    return assembledComps, _assembledComps
+
+
+# Main Function
+def runMesh(wheelTokens):
     global app, ui
 
     app = adsk.core.Application.get()
@@ -89,39 +139,21 @@ def runMesh():
     _assembledComps = [rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())]
     _assembledComps[0].component.name = "unitycomp_0"
 
-    # Does Rigid Groups First
     if progressBar.wasCancelled:
-        return True
+        return False
     progressBar.show("Converting Robot File", "Step 1: Analyzing Joint Data...", 0, len(assemblyOcc) * 4, 0)
     progressBar.progressValue = 0
 
+    # Does Rigid Groups First
     for occs in assemblyOcc:
         occ = occs if occs == rootComp else occs.component
         for rg in occ.rigidGroups:
             if occs != rootComp:
                 rg = rg.createForAssemblyContext(occs)
-            # New Component per RigidGroup
-            newComp = rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
-            newComp.component.name = "unitycomp_" + str(len(assembledComps))
-            newCompNames = []
-            for o in range(rg.occurrences.count):
-                occRG = rg.occurrences.item(o)
-                for i in range(len(assembledComps)):
-                    # If Comp Already in Link, Absorb Previous Linked Components into One
-                    if occRG.fullPathName in assembledComps[i]:
-                        for compName in assembledComps[i]:
-                            newCompNames.append(compName)
-                        assembledComps[i] = []
-                        _assembledComps[i].deleteMe()
-                        break
-                # Else, Create Link for New Component
-                else:
-                    newCompNames.append(occRG.fullPathName)
-            # Stores Linked info into Arrays
-            assembledComps.append(newCompNames)
-            _assembledComps.append(newComp)
+            # Calls to modify assembledComps based off new occs
+            assembledComps, _assembledComps = rigidOccs(rg.occurrences, assembledComps, _assembledComps, rootComp)
         if progressBar.wasCancelled:
-            return True
+            return False
         progressBar.progressValue += 1
 
     # Does Rigid Joints Next
@@ -133,103 +165,54 @@ def runMesh():
                 if occs != rootComp:
                     rigidJoint = rigidJoint.createForAssemblyContext(occs)
                 jointsOcc = [rigidJoint.occurrenceOne, rigidJoint.occurrenceTwo]
-                # -Repeat of RigidGroup Code-
-                # New Component per Rigid Joint
-                newComp = rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
-                newComp.component.name = "unitycomp_" + str(len(assembledComps))
-                newCompNames = []
-                for occRG in jointsOcc:
-                    for i in range(len(assembledComps)):
-                        # If Comp Already in Link, Absorb Previous Linked Components into One
-                        if occRG.fullPathName in assembledComps[i]:
-                            for compName in assembledComps[i]:
-                                newCompNames.append(compName)
-                            assembledComps[i] = []
-                            _assembledComps[i].deleteMe()
-                            break
-                    # Else, Create Link for New Component
-                    else:
-                        newCompNames.append(occRG.fullPathName)
-                # Stores Linked info into Arrays
-                assembledComps.append(newCompNames)
-                _assembledComps.append(newComp)
+                # Calls to modify assembledComps based off new occs
+                assembledComps, _assembledComps = rigidOccs(jointsOcc, assembledComps, _assembledComps, rootComp)
         if progressBar.wasCancelled:
-            return True
+            return False
         progressBar.progressValue += 1
 
     # Does Revolve Joints Last
+    keepGroups = []
+    jntXMLS = []
     jointCount = 0
     for occs in assemblyOcc:
         occ = occs if occs == rootComp else occs.component
         for revJoint in occ.joints:
-            # Recreate Joints with "Free" JointOrigins
-            if (revJoint.jointMotion.jointType == 1 and not revJoint.name.startswith("unityjoint_")):
+            # Breaks up Joint Components into seperate assembledComps
+            if revJoint.jointMotion.jointType == 1:
                 if occs != rootComp:
                     revJoint = revJoint.createForAssemblyContext(occs)
-                jointOrigins = []
-                jointsOcc = [revJoint.occurrenceOne, revJoint.occurrenceTwo]
-                if not jointsOcc[1]:
-                    jointsOcc[1] = rootComp
-                jointsComp = []
-                jointsOrigin = jointOriginWorldSpace(revJoint, rootComp)
-                for o in range(2):
-                    # Creates Unlinked Components
-                    for i in range(len(assembledComps)):
-                        if jointsOcc[o] == rootComp:
-                            continue
-                        if jointsOcc[o].fullPathName in assembledComps[i]:
-                            jointsComp.append(_assembledComps[i].component)
-                            break
-                    else:
-                        # (Section for Base Components)
-                        if o == 1:
-                            baseLink = True
-                            for controlJoints in jointsOcc[1].nativeObject.joints:
-                                if jointsOcc[1] == controlJoints.occurrenceOne:
-                                    baseLink = False
-                            if jointsOcc[1] == rootComp or baseLink:
-                                jointsComp.append(_assembledComps[0].component)
-                                if jointsOcc[1] == rootComp:
-                                    assembledComps[0].append(jointsOcc[o].name)
-                                else:
-                                    assembledComps[0].append(jointsOcc[o].fullPathName)
-                        else:
-                            jointsComp.append(rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create()))
-                            jointsComp[o].component.name = "unitycomp_" + str(len(assembledComps))
-                            assembledComps.append([jointsOcc[o].fullPathName])
-                            _assembledComps.append(jointsComp[o])
-                            jointsComp[o] = jointsComp[o].component
-                    # Creates Point of Joint
-                    pointInput = jointsComp[o].constructionPoints.createInput()
-                    pointInput.setByPoint(jointsOrigin)
-                    jointPoint = jointsComp[o].constructionPoints.add(pointInput)
-                    # Creates Line of Axis
-                    orig_vec = revJoint.jointMotion.rotationAxisVector
-                    inf_line = adsk.core.InfiniteLine3D.create(jointsOrigin, orig_vec)
-                    lineInput = jointsComp[o].constructionAxes.createInput()
-                    lineInput.setByLine(inf_line)
-                    jointLine = jointsComp[o].constructionAxes.add(lineInput)
-                    # Creates Joint Origin
-                    originInput = jointsComp[o].jointOrigins.createInput(adsk.fusion.JointGeometry.createByPoint(jointPoint))
-                    originInput.zAxisEntity = jointLine
-                    jointOrigins.append(jointsComp[o].jointOrigins.add(originInput))
-                # Sets Joint Origin to be new Link
-                jointInput = rootComp.joints.createInput(jointOrigins[0], jointOrigins[1])
-                jointInput.setAsRevoluteJointMotion(revJoint.jointMotion.rotationAxis)
-                # Transfers Data
-                jointInput.jointMotion.rotationLimits.isMaximumValueEnabled = revJoint.jointMotion.rotationLimits.isMaximumValueEnabled
-                jointInput.jointMotion.rotationLimits.isMinimumValueEnabled = revJoint.jointMotion.rotationLimits.isMinimumValueEnabled
-                jointInput.jointMotion.rotationLimits.isRestValueEnabled = revJoint.jointMotion.rotationLimits.isRestValueEnabled
-                jointInput.jointMotion.rotationLimits.maximumValue = revJoint.jointMotion.rotationLimits.maximumValue
-                jointInput.jointMotion.rotationLimits.minimumValue = revJoint.jointMotion.rotationLimits.minimumValue
-                jointInput.jointMotion.rotationLimits.restValue = revJoint.jointMotion.rotationLimits.restValue
-                # Adds New Rev Joint
-                rootComp.joints.add(jointInput).name = "unityjoint_" + str(jointCount)
+                # Creates an Unlinked Component for the Revolute Part
+                for i in range(len(assembledComps)):
+                    if revJoint.occurrenceOne.fullPathName in assembledComps[i]:
+                        keepGroups.append(i)
+                        break
+                else:
+                    # Not a part of a section
+                    keepGroups.append(len(assembledComps))
+                    newOcc = rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+                    newOcc.component.name = "unitycomp_" + str(len(assembledComps))
+                    assembledComps.append([revJoint.occurrenceOne.fullPathName])
+                    _assembledComps.append(newOcc)
+                # Gathers last data and sends to make JntXML
+                parentNum = 0
+                for i in range(len(assembledComps)):
+                    if revJoint.occurrenceTwo.fullPathName in assembledComps[i]:
+                        parentNum = i
+                        break
+                jntXMLS.append(UnityExporter.createJntXML(revJoint, parentNum, keepGroups[-1], jointCount))
                 jointCount += 1
         if progressBar.wasCancelled:
-            return True
+            return False
         progressBar.progressValue += 2
+
+    # Removes Components not under keeps
+    for i in range(1, len(assembledComps)):
+        if _assembledComps[i].isValid and i not in keepGroups:
+            assembledComps[i] = []
+            _assembledComps[i].deleteMe()
     app.activeViewport.refresh()
+
 
     # Meshing Code
     progressBar.show("Converting Robot File", "Step 2: Combining Occurrences...", 0, len(assembledComps), 0)
@@ -245,18 +228,27 @@ def runMesh():
                 childOccs = newOcc.childOccurrences
             if newOcc:
                 newOcc.moveToComponent(_assembledComps[i])
+            if progressBar.wasCancelled:
+                return False
         progressBar.progressValue += 1
     while rootComp.occurrences.item(0).name != "unitycomp_0:1":
         rootComp.occurrences.item(0).moveToComponent(_assembledComps[0])
     progressBar.progressValue += 1
 
+    # Removes Wheel Comps
+    for wheel in wheelTokens:
+        wheelParent = design.findEntityByToken(wheel)[0].fullPathName.split('+')[0]
+        rootComp.occurrences.itemByName(wheelParent).isLightBulbOn = False
+
     # Remove Small Bodies
     progressBar.show("Converting Robot File", "Step 3: Removing Small Bodies...", 0, len(assembledComps), 0)
     progressBar.progressValue = 0
     for occ in _assembledComps:
-        if occ.isValid:
+        if occ.isValid and occ.isLightBulbOn:
             removeSmallInAssembly(occ.physicalProperties.volume, occ.childOccurrences)
+        if progressBar.wasCancelled:
+            return False
         progressBar.progressValue += 1
 
     progressBar.hide()
-    return False
+    return jntXMLS
