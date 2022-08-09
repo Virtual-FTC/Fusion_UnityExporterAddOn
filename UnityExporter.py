@@ -68,7 +68,7 @@ Also make sure to support 4 Bar Parallel Lifts with Joints on Both Sides!'''
         progressBar.hide()
 
         # First: Select Wheels (This is created here to save global variables)
-        ui.messageBox("1. Select the Wheel Components on the Robot", "Configuration Steps")
+        ui.messageBox("1. In the Next Step, Select the Wheel Components on the Robot", "Configuration Steps")
 
         # Get the existing command definition or create it if it doesn't already exist.
         cmdDef = ui.commandDefinitions.itemById('cmdWheelsConfig')
@@ -156,7 +156,7 @@ class MyExecuteHandler(adsk.core.CommandEventHandler):
             selector.deleteMe()
 
             # Next Step: Ask Location to store
-            ui.messageBox("2. Select Location to Store Folder of Robot Data", "Configuration Steps")
+            ui.messageBox("2. In the Next Step, Select Location to Store Folder of Robot Data", "Configuration Steps")
 
             folderDia = ui.createFolderDialog()
             folderDia.title = "Select Location to Store Folder of Robot Data"
@@ -323,10 +323,10 @@ def finalExport(jntXMLS):
 # Clean up CAD File
 def stop(context):
     try:
-        #if app.activeDocument.isModified and started:
-        #    dataFile = app.activeDocument.dataFile
-        #    app.activeDocument.close(False)
-        #    app.documents.open(dataFile)
-        ui.messageBox("tempdisable")
+        if app.activeDocument.isModified and started:
+            dataFile = app.activeDocument.dataFile
+            app.activeDocument.close(False)
+            app.documents.open(dataFile)
+        #ui.messageBox("tempdisable")
     except:
         ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
