@@ -1,7 +1,6 @@
 #Author- VRS Team
 #Description- Fusion Exporter to import files into Unity for the VRS
 
-from glob import glob
 import os
 from xml.dom import minidom
 import adsk.core, adsk.fusion, adsk.cam, traceback
@@ -148,13 +147,9 @@ class MyExecuteHandler(adsk.core.CommandEventHandler):
             # Returns Data
             selector = adsk.core.Command.cast(args.command).commandInputs.item(0)
 
-            wheelOccs = []
-            for i in range(selector.selectionCount):
-                if selector.selection(i).entity.fullPathName.count('+') == 0:
-                    entity = selector.selection(i).entity.nativeObject
-                else:
-                    entity = selector.selection(i).entity.assemblyContext
-                wheelOccs.append(entity.entityToken)
+            wheelOccs = [selector.selection(i).entity.fullPathName for i in range(selector.selectionCount)]
+
+            adsk.terminate()
 
             selector.isVisible = False
             selector.isEnabled = False
@@ -202,10 +197,12 @@ def createJntXML(revJoint, parentNum, childNum, jointCount):
     jntXML.appendChild(child)
     axis = root.createElement('axis')
     rotAxis = revJoint.jointMotion.rotationAxisVector
+    rotAxis.transformBy(MeshExporter.newTransform)
     axis.setAttribute('xyz', str(rotAxis.x) + ' ' + str(rotAxis.y) + ' ' + str(rotAxis.z))
     jntXML.appendChild(axis)
     # Finds Origin of Joint
     jointsOrigin = MeshExporter.jointOriginWorldSpace(revJoint)
+    jointsOrigin.transformBy(MeshExporter.newTransform)
     origin = root.createElement('origin')
     origin.setAttribute('xyz', str(jointsOrigin.x) + " " + str(jointsOrigin.y) + " " + str(jointsOrigin.z))
     jntXML.appendChild(origin)
@@ -239,9 +236,7 @@ def finalExport(jntXMLS):
     adsk.doEvents()
 
     # Orients Components
-    #for occ in rootComp.occurrences:
-    #    newTransform = adsk.core.Matrix3D.create()
-    #    occ.transform2 = newTransform
+    rootComp.occurrences[0].transform = MeshExporter.newTransform
 
     # Creates XML URDF File
     root = minidom.Document()
@@ -259,7 +254,7 @@ def finalExport(jntXMLS):
     robot.appendChild(attributes)
 
     # Adds Links just for mass reading purposes
-    for occ in rootComp.occurrences:
+    for occ in rootComp.occurrences[0].childOccurrences:
         lnkXML = root.createElement('link')
         lnkXML.setAttribute('name', occ.name[:-2])
         robot.appendChild(lnkXML)
@@ -277,6 +272,14 @@ def finalExport(jntXMLS):
 
     # Adds the Previously calculated JntXMLS
     for jntXML in jntXMLS:
+        # Checks for dissolved groups
+        dissolved = True
+        for occ in rootComp.occurrences[0].childOccurrences:
+            if occ.name[:-2] == jntXML.firstChild.getAttribute("link"):
+                dissolved = False
+                break
+        if dissolved:
+            jntXML.firstChild.setAttribute('link', 'unitycomp_0')
         robot.appendChild(jntXML)
 
     # Store Meshes
@@ -289,28 +292,28 @@ def finalExport(jntXMLS):
     f.write(xml_string)
     f.close()
 
-    progressBar.show("Converting Robot File", "Step 5: Creating Final Meshes...", 0, rootComp.occurrences.count, 0)
+    progressBar.show("Converting Robot File", "Step 5: Creating Final Meshes...", 0, rootComp.occurrences[0].childOccurrences.count, 0)
     progressBar.progressValue = 0
 
-    for o in range(rootComp.occurrences.count):
-        try:
-            # STL
-            occ = rootComp.occurrences.item(o)
-            stlExport = design.exportManager.createSTLExportOptions(occ, exportPath + "/" + occ.name[:-2])
-            stlExport.meshRefinement = 2
-            stlExport.aspectRatio *= 10
-            stlExport.maximumEdgeLength *= 10
-            stlExport.normalDeviation *= 10
-            stlExport.surfaceDeviation *= 10
-            design.exportManager.execute(stlExport)
-            # Progress
-            progressBar.progressValue += 1
-            if progressBar.wasCancelled:
-                ui.messageBox("Cancelled Task")
-                adsk.terminate()
-                return
-        except:
-            pass
+    for occ in rootComp.occurrences[0].childOccurrences:
+        if occ.isLightBulbOn:
+            try:
+                # STL
+                stlExport = design.exportManager.createSTLExportOptions(occ, exportPath + "/" + occ.name[:-2])
+                stlExport.meshRefinement = 2
+                stlExport.aspectRatio *= 10
+                stlExport.maximumEdgeLength *= 10
+                stlExport.normalDeviation *= 10
+                stlExport.surfaceDeviation *= 10
+                design.exportManager.execute(stlExport)
+                # Progress
+                if progressBar.wasCancelled:
+                    ui.messageBox("Cancelled Task")
+                    adsk.terminate()
+                    return
+            except:
+                pass
+        progressBar.progressValue += 1
 
     progressBar.hide()
 
@@ -320,18 +323,10 @@ def finalExport(jntXMLS):
 # Clean up CAD File
 def stop(context):
     try:
-        if app.activeDocument.isModified and started:
-            dataFile = app.activeDocument.dataFile
-            app.activeDocument.close(False)
-            app.documents.open(dataFile)
-        #adsk.doEvents()
-        #app.activeViewport.refresh()
-        #cam = app.activeViewport.camera
-        #cam.viewOrientation = 10
-        #cam.isSmoothTransition = False
-        #app.activeViewport.camera = cam
-        #point = cam.eye
-        #ui.messageBox(str(point.x) + ", " + str(point.y) + ", " + str(point.z))
-        #ui.messageBox("TempDisable")
+        #if app.activeDocument.isModified and started:
+        #    dataFile = app.activeDocument.dataFile
+        #    app.activeDocument.close(False)
+        #    app.documents.open(dataFile)
+        ui.messageBox("tempdisable")
     except:
         ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))

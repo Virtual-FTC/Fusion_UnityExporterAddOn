@@ -1,6 +1,5 @@
 # Creates seperate meshes from joint info
 
-from email.mime import base
 from pickle import TRUE
 import adsk.core, adsk.fusion
 
@@ -10,6 +9,7 @@ app = None
 ui = adsk.core.UserInterface.cast(None)
 
 jointOccs = {}
+newTransform = None
 
 # Recursively travels through assemblies and stores all assemblies with joint info
 def findJointAssemblies(occurrences):
@@ -34,7 +34,8 @@ def findJointAssemblies(occurrences):
 def removeSmallInAssembly(baseSize, occurrences):
     for occ in occurrences:
         
-        if occ.component.physicalProperties.volume < 1.5 and occ.component.physicalProperties.volume < baseSize / 2:
+        volume = occ.component.physicalProperties.volume
+        if volume < 1.5 and volume < baseSize / 2:
             occ.isLightBulbOn = False
 
         elif occ.childOccurrences:
@@ -77,8 +78,23 @@ def jointOriginWorldSpace(revJoint):
         jointsOrigin.transformBy(transform)
     return jointsOrigin
 
+# Returns vector with only one +/- 1 value
+def returnNormalVector(point):
+    if abs(point.x) > abs(point.y) and abs(point.x) > abs(point.z):
+        returnVec = adsk.core.Vector3D.create(1, 0, 0)
+        returnVec.scaleBy(point.x / abs(point.x))
+        return returnVec
+    if abs(point.y) > abs(point.x) and abs(point.y) > abs(point.z):
+        returnVec = adsk.core.Vector3D.create(0, 1, 0)
+        returnVec.scaleBy(point.y / abs(point.y))
+        return returnVec
+    if abs(point.z) > abs(point.x) and abs(point.z) > abs(point.y):
+        returnVec = adsk.core.Vector3D.create(0, 0, 1)
+        returnVec.scaleBy(point.z / abs(point.z))
+        return returnVec
+
 # Rigid Combination
-def rigidOccs(occs, assembledComps, _assembledComps, rootComp):
+def rigidOccs(occs, assembledComps, _assembledComps, exportComp):
     # New Component per Rigid Joint or absorb into other Group
     newCompNames = []
     grounded = False
@@ -103,7 +119,7 @@ def rigidOccs(occs, assembledComps, _assembledComps, rootComp):
     if grounded:
         assembledComps[0].extend(newCompNames)
     else:
-        newComp = rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+        newComp = exportComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
         newComp.component.name = "unitycomp_" + str(len(assembledComps))
         assembledComps.append(newCompNames)
         _assembledComps.append(newComp)
@@ -111,7 +127,7 @@ def rigidOccs(occs, assembledComps, _assembledComps, rootComp):
 
 
 # Main Function
-def runMesh(wheelTokens):
+def runMesh(wheelNames):
     global app, ui
 
     app = adsk.core.Application.get()
@@ -126,6 +142,41 @@ def runMesh(wheelTokens):
     # Creates Progress Bar
     progressBar = ui.createProgressDialog()
 
+
+    # Checks upwards and forward directions
+    progressBar.show("Converting Robot File", "Starting Process...", 0, 1, 0)
+    progressBar.progressValue = 1
+    app.activeViewport.refresh()
+    adsk.doEvents()
+    originalCam = app.activeViewport.camera
+    # Move to Up
+    cam = app.activeViewport.camera
+    cam.viewOrientation = 10
+    cam.isSmoothTransition = False
+    app.activeViewport.camera = cam
+    app.activeViewport.fit()
+    # Capture Up
+    cam = app.activeViewport.camera
+    yVector = returnNormalVector(cam.eye)
+    # Move to Forward
+    cam.viewOrientation = 3
+    cam.isSmoothTransition = False
+    app.activeViewport.camera = cam
+    app.activeViewport.fit()
+    # Capture Forward
+    cam = app.activeViewport.camera
+    zVector = returnNormalVector(cam.eye)
+    # Reset
+    app.activeViewport.camera = originalCam
+    app.activeViewport.fit()
+    # Gets Transform to apply to occurrences
+    global newTransform
+    newTransform = adsk.core.Matrix3D.create()
+    origin = adsk.core.Point3D.create(0, 0, 0)
+    newTransform.setToAlignCoordinateSystems(origin, yVector.crossProduct(zVector), yVector, zVector, origin,
+        adsk.core.Vector3D.create(-1, 0, 0), adsk.core.Vector3D.create(0, 1, 0), adsk.core.Vector3D.create(0, 0, -1))
+
+
     # Creates List of assembly components that contain joints
     assemblyOcc = [rootComp]
     for occ in findJointAssemblies(rootComp.occurrences):
@@ -134,9 +185,14 @@ def runMesh(wheelTokens):
 
     # -Loops through Joints in Assemblies-
 
+    # Puts all in exportcomp to be able to re-orient unitycomps
+    exportComp = rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create()).component
+    exportComp.name = "exportcomps"
     # (First Assembled Group is Base Group)
     assembledComps = [[]]
-    _assembledComps = [rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())]
+    inverseTransform = newTransform.copy() # This is needed as basecomp refuses to be rotated
+    inverseTransform.invert()
+    _assembledComps = [exportComp.occurrences.addNewComponent(inverseTransform)]
     _assembledComps[0].component.name = "unitycomp_0"
 
     if progressBar.wasCancelled:
@@ -151,7 +207,7 @@ def runMesh(wheelTokens):
             if occs != rootComp:
                 rg = rg.createForAssemblyContext(occs)
             # Calls to modify assembledComps based off new occs
-            assembledComps, _assembledComps = rigidOccs(rg.occurrences, assembledComps, _assembledComps, rootComp)
+            assembledComps, _assembledComps = rigidOccs(rg.occurrences, assembledComps, _assembledComps, exportComp)
         if progressBar.wasCancelled:
             return False
         progressBar.progressValue += 1
@@ -166,7 +222,7 @@ def runMesh(wheelTokens):
                     rigidJoint = rigidJoint.createForAssemblyContext(occs)
                 jointsOcc = [rigidJoint.occurrenceOne, rigidJoint.occurrenceTwo]
                 # Calls to modify assembledComps based off new occs
-                assembledComps, _assembledComps = rigidOccs(jointsOcc, assembledComps, _assembledComps, rootComp)
+                assembledComps, _assembledComps = rigidOccs(jointsOcc, assembledComps, _assembledComps, exportComp)
         if progressBar.wasCancelled:
             return False
         progressBar.progressValue += 1
@@ -190,7 +246,7 @@ def runMesh(wheelTokens):
                 else:
                     # Not a part of a section
                     keepGroups.append(len(assembledComps))
-                    newOcc = rootComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+                    newOcc = exportComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
                     newOcc.component.name = "unitycomp_" + str(len(assembledComps))
                     assembledComps.append([revJoint.occurrenceOne.fullPathName])
                     _assembledComps.append(newOcc)
@@ -213,7 +269,6 @@ def runMesh(wheelTokens):
             _assembledComps[i].deleteMe()
     app.activeViewport.refresh()
 
-
     # Meshing Code
     progressBar.show("Converting Robot File", "Step 2: Combining Occurrences...", 0, len(assembledComps), 0)
     progressBar.progressValue = 0
@@ -231,20 +286,22 @@ def runMesh(wheelTokens):
             if progressBar.wasCancelled:
                 return False
         progressBar.progressValue += 1
-    while rootComp.occurrences.item(0).name != "unitycomp_0:1":
+    while rootComp.occurrences.item(0).name != "exportcomps:1":
         rootComp.occurrences.item(0).moveToComponent(_assembledComps[0])
     progressBar.progressValue += 1
 
     # Removes Wheel Comps
-    for wheel in wheelTokens:
-        wheelParent = design.findEntityByToken(wheel)[0].fullPathName.split('+')[0]
-        rootComp.occurrences.itemByName(wheelParent).isLightBulbOn = False
+    for wheel in wheelNames:
+        for i in range(1, len(assembledComps)):
+            if wheel in assembledComps[i]:
+                _assembledComps[i].isLightBulbOn = False
+                break
 
     # Remove Small Bodies
     progressBar.show("Converting Robot File", "Step 3: Removing Small Bodies...", 0, len(assembledComps), 0)
     progressBar.progressValue = 0
-    for occ in _assembledComps:
-        if occ.isValid and occ.isLightBulbOn:
+    for occ in rootComp.occurrences[0].childOccurrences: # _assembledComps couldnt tell if LightBulbOn
+        if occ.isLightBulbOn:
             removeSmallInAssembly(occ.physicalProperties.volume, occ.childOccurrences)
         if progressBar.wasCancelled:
             return False
