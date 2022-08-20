@@ -10,9 +10,11 @@ ui = adsk.core.UserInterface.cast(None)
 
 jointOccs = {}
 newTransform = None
+usesGroundedComps = False
 
 # Recursively travels through assemblies and stores all assemblies with joint info
 def findJointAssemblies(occurrences):
+    global usesGroundedComps
     assemblyOcc = []
 
     for i in range(0, occurrences.count):
@@ -28,6 +30,9 @@ def findJointAssemblies(occurrences):
             for o in newOcc:
                 assemblyOcc.append(o)
 
+        if occ.isGrounded:
+            usesGroundedComps = True
+
     return assemblyOcc
 
 # Recursively travels through assemblies deleting small bodies
@@ -42,20 +47,20 @@ def removeSmallInAssembly(baseSize, occurrences):
                 removeSmallInAssembly(baseSize, occ.childOccurrences)
 
 # Return Origin of Joint in World Space
-def jointOriginWorldSpace(revJoint):
+def jointOriginWorldSpace(jointObj):
     product = app.activeProduct
     design = adsk.fusion.Design.cast(product)
     rootComp = design.rootComponent
 
-    jointsOcc = revJoint.occurrenceTwo
+    jointsOcc = jointObj.occurrenceTwo
     if not jointsOcc:
         jointsOcc = rootComp
     # Sets Correct Origin Based on Occurrence not Component (Also only 1 origin for offset purposes)
     try:
-        joint = revJoint.geometryOrOriginTwo
+        joint = jointObj.geometryOrOriginTwo
     except: # May not have geometryTwo
-        jointsOcc = revJoint.occurrenceOne
-        joint = revJoint.geometryOrOriginOne
+        jointsOcc = jointObj.occurrenceOne
+        joint = jointObj.geometryOrOriginOne
     app.activeViewport.refresh()
     if joint.objectType == adsk.fusion.JointOrigin.classType():
         joint = joint.geometry
@@ -68,7 +73,7 @@ def jointOriginWorldSpace(revJoint):
         else:
             baseComp = joint.entityOne.body.parentComponent
     except:
-        ui.messageBox("Whoops! It seems Joint: \"" + revJoint.name + "\" is connected to a currently not supported piece of Geometry! In a future update this may be fixed.")
+        ui.messageBox("Whoops! It seems Joint: \"" + jointObj.name + "\" is connected to a currently not supported piece of Geometry! In a future update this may be fixed.")
         joint.entityOne.body.parentComponent
     baseComp = rootComp.allOccurrencesByComponent(baseComp).item(0)
     if baseComp:
@@ -143,6 +148,16 @@ def runMesh(wheelNames):
     progressBar = ui.createProgressDialog()
 
 
+    # Leave this here in case I need to debug again
+
+    # Create a graphics group on the root component.
+    #graphics = rootComp.customGraphicsGroups.add()
+    # Adds Point Graphic
+    #coord = adsk.fusion.CustomGraphicsCoordinates.create(point.asArray())
+    #point = graphics.addPointSet(coord, [0], adsk.fusion.CustomGraphicsPointTypes.UserDefinedCustomGraphicsPointType,
+    #    'SelectJoint.png')
+
+
     # Checks upwards and forward directions
     progressBar.show("Converting Robot File", "Starting Process...", 0, 1, 0)
     progressBar.progressValue = 1
@@ -175,7 +190,17 @@ def runMesh(wheelNames):
     origin = adsk.core.Point3D.create(0, 0, 0)
     newTransform.setToAlignCoordinateSystems(origin, yVector.crossProduct(zVector), yVector, zVector, origin,
         adsk.core.Vector3D.create(-1, 0, 0), adsk.core.Vector3D.create(0, 1, 0), adsk.core.Vector3D.create(0, 0, -1))
-
+    # Adds on origin as well
+    minPoint = rootComp.boundingBox.minPoint.asVector()
+    maxPoint = rootComp.boundingBox.maxPoint.asVector()
+    minPoint.transformBy(newTransform)
+    maxPoint.transformBy(newTransform)
+    floorPoint = min(minPoint.y, maxPoint.y)
+    minPoint.add(maxPoint)
+    minPoint.scaleBy(-.5)
+    minPoint.y = -floorPoint #Ground Plane is offset weirdly so base it instead off of wheel sizes in importer
+    newTransform.setToAlignCoordinateSystems(origin, yVector.crossProduct(zVector), yVector, zVector, minPoint.asPoint(),
+        adsk.core.Vector3D.create(-1, 0, 0), adsk.core.Vector3D.create(0, 1, 0), adsk.core.Vector3D.create(0, 0, -1))
 
     # Creates List of assembly components that contain joints
     assemblyOcc = [rootComp]
@@ -227,46 +252,53 @@ def runMesh(wheelNames):
             return False
         progressBar.progressValue += 1
 
-    # Does Revolve Joints Last
+    # Does Revolve/Slide Joints Last
     keepGroups = []
     jntXMLS = []
     jointCount = 0
     for occs in assemblyOcc:
         occ = occs if occs == rootComp else occs.component
-        for revJoint in occ.joints:
+        for jointObj in occ.joints:
             # Breaks up Joint Components into seperate assembledComps
-            if revJoint.jointMotion.jointType == 1:
+            if jointObj.jointMotion.jointType == 1 or jointObj.jointMotion.jointType == 2:
                 if occs != rootComp:
-                    revJoint = revJoint.createForAssemblyContext(occs)
+                    jointObj = jointObj.createForAssemblyContext(occs)
                 # Creates an Unlinked Component for the Revolute Part
-                for i in range(len(assembledComps)):
-                    if revJoint.occurrenceOne.fullPathName in assembledComps[i]:
-                        keepGroups.append(i)
-                        break
-                else:
-                    # Not a part of a section
-                    keepGroups.append(len(assembledComps))
-                    newOcc = exportComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
-                    newOcc.component.name = "unitycomp_" + str(len(assembledComps))
-                    assembledComps.append([revJoint.occurrenceOne.fullPathName])
-                    _assembledComps.append(newOcc)
+                occurrences = [jointObj.occurrenceOne, jointObj.occurrenceTwo]
+                for jntOcc in range(2 if usesGroundedComps and occurrences[1] else 1):
+                    if occurrences[jntOcc] == rootComp:
+                        continue
+                    for i in range(len(assembledComps)):
+                        if occurrences[jntOcc].fullPathName in assembledComps[i]:
+                            if jntOcc == 0:
+                                keepGroups.append(i)
+                            break
+                    else:
+                        # Not a part of a section
+                        if jntOcc == 0:
+                            keepGroups.append(len(assembledComps))
+                        newOcc = exportComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+                        newOcc.component.name = "unitycomp_" + str(len(assembledComps))
+                        assembledComps.append([occurrences[jntOcc].fullPathName])
+                        _assembledComps.append(newOcc)
                 # Gathers last data and sends to make JntXML
                 parentNum = 0
                 for i in range(len(assembledComps)):
-                    if revJoint.occurrenceTwo.fullPathName in assembledComps[i]:
+                    if jointObj.occurrenceTwo.fullPathName in assembledComps[i]:
                         parentNum = i
                         break
-                jntXMLS.append(UnityExporter.createJntXML(revJoint, parentNum, keepGroups[-1], jointCount))
+                jntXMLS.append(UnityExporter.createJntXML(jointObj, parentNum, keepGroups[-1], jointCount))
                 jointCount += 1
         if progressBar.wasCancelled:
             return False
         progressBar.progressValue += 2
 
-    # Removes Components not under keeps
-    for i in range(1, len(assembledComps)):
-        if _assembledComps[i].isValid and i not in keepGroups:
-            assembledComps[i] = []
-            _assembledComps[i].deleteMe()
+    # Removes Components not under keeps if not using grounded comps
+    if not usesGroundedComps:
+        for i in range(1, len(assembledComps)):
+            if _assembledComps[i].isValid and i not in keepGroups:
+                assembledComps[i] = []
+                _assembledComps[i].deleteMe()
     app.activeViewport.refresh()
 
     # Meshing Code

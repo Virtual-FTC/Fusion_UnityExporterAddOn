@@ -185,8 +185,9 @@ class MyExecuteHandler(adsk.core.CommandEventHandler):
 
 
 # Creates JntXML mid MeshExporter as combining components can break joints
-def createJntXML(revJoint, parentNum, childNum, jointCount):
+def createJntXML(jointObj, parentNum, childNum, jointCount):
     root = minidom.Document()
+    # Creates Basic Joint Setup
     jntXML = root.createElement('joint')
     jntXML.setAttribute('name', "unityjoint_" + str(jointCount))
     parent = root.createElement('parent')
@@ -195,31 +196,42 @@ def createJntXML(revJoint, parentNum, childNum, jointCount):
     child = root.createElement('child')
     child.setAttribute('link', "unitycomp_" + str(childNum))
     jntXML.appendChild(child)
+    # Revolute or Prismatic Joint
+    if jointObj.jointMotion.jointType == 1:
+        jntXML.setAttribute('type', 'revolute')
+        jntAxis = jointObj.jointMotion.rotationAxisVector
+        jntLimit = jointObj.jointMotion.rotationLimits
+    elif jointObj.jointMotion.jointType == 2:
+        jntXML.setAttribute('type', 'prismatic')
+        jntAxis = jointObj.jointMotion.slideDirectionVector
+        jntLimit = jointObj.jointMotion.slideLimits
+    # Sets Axis of Travel for Joints
     axis = root.createElement('axis')
-    rotAxis = revJoint.jointMotion.rotationAxisVector
-    rotAxis.transformBy(MeshExporter.newTransform)
-    if abs(rotAxis.x) < .01: rotAxis.x = 0
-    if abs(rotAxis.y) < .01: rotAxis.y = 0
-    if abs(rotAxis.z) < .01: rotAxis.z = 0
-    axis.setAttribute('xyz', str(rotAxis.x) + ' ' + str(rotAxis.y) + ' ' + str(rotAxis.z))
+    jntAxis.transformBy(MeshExporter.newTransform)
+    if abs(jntAxis.x) < .01: jntAxis.x = 0
+    if abs(jntAxis.y) < .01: jntAxis.y = 0
+    if abs(jntAxis.z) < .01: jntAxis.z = 0
+    axis.setAttribute('xyz', str(jntAxis.x) + ' ' + str(jntAxis.y) + ' ' + str(jntAxis.z))
     jntXML.appendChild(axis)
     # Finds Origin of Joint
-    jointsOrigin = MeshExporter.jointOriginWorldSpace(revJoint)
+    jointsOrigin = MeshExporter.jointOriginWorldSpace(jointObj)
     jointsOrigin.transformBy(MeshExporter.newTransform)
     origin = root.createElement('origin')
     origin.setAttribute('xyz', str(jointsOrigin.x) + " " + str(jointsOrigin.y) + " " + str(jointsOrigin.z))
     jntXML.appendChild(origin)
-    # Revolute (Limited) or Continuous
-    if revJoint.jointMotion.rotationLimits.isMaximumValueEnabled:
-        jntXML.setAttribute('type', 'revolute')
-        limit = root.createElement('limit')
-        limit.setAttribute('upper', str(revJoint.jointMotion.rotationLimits.maximumValue))
-        limit.setAttribute('lower', str(revJoint.jointMotion.rotationLimits.minimumValue))
-        jntXML.appendChild(limit)
-    else:
-        jntXML.setAttribute('type', 'continuous')
+    # Sets Limits if Found
+    limit = root.createElement('limit')
+    lowerLimit = ""
+    if jntLimit.isMinimumValueEnabled:
+        lowerLimit = str(jntLimit.minimumValue)
+    limit.setAttribute('lower', lowerLimit)
+    upperLimit = ""
+    if jntLimit.isMaximumValueEnabled:
+        upperLimit = str(jntLimit.maximumValue)
+    limit.setAttribute('upper', upperLimit)
+    jntXML.appendChild(limit)
 
-    # --ADD SLIDER JOINTS AND MOTION LINKS--
+    # --ADD MOTION LINKS? (Not exposed to API)--
 
     return jntXML
 
@@ -247,40 +259,48 @@ def finalExport(jntXMLS):
     robot.setAttribute('name', app.activeDocument.name)
     root.appendChild(robot)
 
-    attributes = root.createElement('attributes')
-    point = rootComp.boundingBox.maxPoint
-    rootComp.transformOccurrences
-    boxStr = str(point.x) + " " + str(point.y) + " " + str(point.z)
-    point = rootComp.boundingBox.minPoint
-    boxStr += ", " + str(point.x) + " " + str(point.y) + " " + str(point.z)
-    attributes.setAttribute('boundingBox', boxStr)
-    robot.appendChild(attributes)
-
     # Adds Links just for mass reading purposes
     for occ in rootComp.occurrences[0].childOccurrences:
-        lnkXML = root.createElement('link')
-        lnkXML.setAttribute('name', occ.name[:-2])
-        robot.appendChild(lnkXML)
         if occ.isLightBulbOn:
+            lnkXML = root.createElement('link')
+            lnkXML.setAttribute('name', occ.name[:-2])
+            robot.appendChild(lnkXML)
             # Sets Mass Info
             massXML = root.createElement('mass')
             massXML.setAttribute('value', str(occ.physicalProperties.mass))
             lnkXML.appendChild(massXML)
-        else:
-            # Wheel Joint
-            wheelXML = root.createElement('wheel')
-            wheelXML.setAttribute('type', '')
-            wheelXML.setAttribute('offset', '0')
-            lnkXML.appendChild(wheelXML)
 
     # Adds the Previously calculated JntXMLS
     for jntXML in jntXMLS:
-        # Checks for dissolved groups
         dissolved = True
         for occ in rootComp.occurrences[0].childOccurrences:
-            if occ.name[:-2] == jntXML.firstChild.getAttribute("link"):
+            # Checks if comp still exists
+            if occ.name[:-2] == jntXML.firstChild.getAttribute("link"): # parent
                 dissolved = False
-                break
+            # Check if is a wheel
+            if occ.name[:-2] == jntXML.childNodes[1].getAttribute("link"): # child
+                if not occ.isLightBulbOn:
+                    wheelXML = root.createElement('wheel')
+                    wheelXML.setAttribute('type', '')
+                    '''
+                    # Doesn't work due to axels being apart of wheel object so better to set in importer
+                    
+                    # Gets offset and center properties
+                    axis = adsk.core.Vector3D.create(0, 0, 0)
+                    axis.setWithArray([float(i) for i in jntXML.childNodes[2].getAttribute("xyz").split(' ')])
+                    origin = adsk.core.Vector3D.create(0, 0, 0)
+                    origin.setWithArray([float(i) for i in jntXML.childNodes[3].getAttribute("xyz").split(' ')])
+                    yAxis = adsk.core.Vector3D.create(0, 1, 0)
+                    newTransform = adsk.core.Matrix3D.create()
+                    newTransform.setToAlignCoordinateSystems(origin.asPoint(), axis, yAxis, axis.crossProduct(yAxis),
+                        adsk.core.Point3D.create(0, 0, 0), adsk.core.Vector3D.create(1, 0, 0), yAxis, adsk.core.Vector3D.create(0, 0, 1))
+                    combinedTransform = MeshExporter.newTransform.copy()
+                    combinedTransform.transformBy(newTransform)
+                    occ.transform2 = combinedTransform
+                    wheelXML.setAttribute('offset', str(occ.boundingBox.maxPoint.x))
+                    '''
+                    wheelXML.setAttribute('offset', "0")
+                    jntXML.appendChild(wheelXML)
         if dissolved:
             jntXML.firstChild.setAttribute('link', 'unitycomp_0')
         robot.appendChild(jntXML)
