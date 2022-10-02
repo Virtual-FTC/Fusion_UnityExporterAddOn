@@ -1,15 +1,15 @@
 <?xml version="1.0" ?>
-<robot name="_name_">
-	<attributes boundingBox="+x +y +z, -x -y -z"/>
-	<link name="unitycomp_#">
+<robot name="_name of file_">
+	<link name="unitycomp_#"> <!--Does not include wheels-->
 		<mass value="#">
 	</link>
-	<joint name="unityjoint_#" type="continuous"/"revolute">
+	<joint name="unityjoint_#" type="revolute"/"prismatic">
 		<parent link="unitycomp_#"/>
 		<child link="unitycomp_#"/>
-		<axis xyz="x y z"/>
-		<origin xyz="z y z"/>
-         <wheel type="" offset="0"/>
-         <limits lower="_radians_" upper="_radians_"/>
+		<axis xyz="_x y z_"/>
+		<origin xyz="_z y z_"/>
+        <limits lower=""/"_radians_"/"_cm_" upper=""/"_radians_"/"_cm_"/>
+		 <wheel type="" offset="0"/> <!--Indented for may not be included-->
 	</joint>
+	<!--Other URDF Info like Motors are setup and parsed in Importer-->
 </robot>

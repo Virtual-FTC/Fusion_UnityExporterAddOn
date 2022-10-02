@@ -10,13 +10,14 @@ from . import MeshExporter
 app = None
 ui = adsk.core.UserInterface.cast(None)
 
-_handlers = []
+started = False
+exportPath = ""
 
-docName = ""
+_handlers = []
 
 # Starting Function
 def run(context):
-    global app, ui
+    global app, ui, started
     try:
         app = adsk.core.Application.get()
         ui  = app.userInterface
@@ -33,7 +34,9 @@ If you experience any issues, feel free to reach out!'''
             return
 
         # Opening Statement
-        statement = '''Before hitting "OK", be sure that your robot has all included joints!'''
+        statement = '''Before hitting "OK", be sure that your robot includes all needed joints!
+
+Also make sure to support 4 Bar Parallel Lifts with Joints on Both Sides!'''
 
         results = ui.messageBox(statement, "IMPORTANT INFO", 1)
         if results == 1:
@@ -43,38 +46,29 @@ If you experience any issues, feel free to reach out!'''
 
         # Creates Progress Bar
         progressBar = ui.createProgressDialog()
-        progressBar.show("Converting Robot File", "Cloning Last Saved File...", 0, 1, 0)
+
+        #Saves File if not saved before starting
+        if app.activeDocument.isModified:
+            progressBar.show("Converting Robot File", "Saving File...", 0, 1, 0)
+            progressBar.progressValue = 1
+            app.activeViewport.refresh()
+            adsk.doEvents()
+            app.activeDocument.save("")
+
+        # Modifies Current Document Settings
+        started = True
+        progressBar.show("Converting Robot File", "Modifying File...", 0, 1, 0)
         progressBar.progressValue = 1
-
-        # Delete any previous "Unity Export" Files
-        for i in range(app.activeDocument.dataFile.parentFolder.dataFiles.count):
-            if app.activeDocument.dataFile.parentFolder.dataFiles.item(i).name.startswith("Unity Export"):
-                app.activeDocument.dataFile.parentFolder.dataFiles.item(i).deleteMe()
-                break
-
-        #Clone Current Document (Todo: Remove cloning *safely*)
-        global docName
-        docName = app.activeDocument.name
-        data_orig = app.activeDocument.dataFile.copy(app.activeDocument.dataFile.parentFolder)
-        data_orig.name = "Unity Export"
-        app.documents.open(data_orig)
-
-        product = app.activeProduct
-        design = adsk.fusion.Design.cast(product)
+        app.activeViewport.refresh()
+        adsk.doEvents()
+        design = adsk.fusion.Design.cast(app.activeProduct)
         design.designType = 0
         design.fusionUnitsManager.distanceDisplayUnits = 0
 
         progressBar.hide()
 
-        # Meshing Function
-        cancelled = MeshExporter.runMesh()
-        if cancelled:
-            ui.messageBox("Cancelled Task")
-            adsk.terminate()
-            return
-
-        # Next step: Select Wheels (This is created here to save global variables)
-        ui.messageBox("Select the Wheel Components on the Robot", "Almost Finished!")
+        # First: Select Wheels (This is created here to save global variables)
+        ui.messageBox("[1/2] In the Next Step:\n   Select the Wheel Components on the Robot", "Configuration Steps")
 
         # Get the existing command definition or create it if it doesn't already exist.
         cmdDef = ui.commandDefinitions.itemById('cmdWheelsConfig')
@@ -153,22 +147,98 @@ class MyExecuteHandler(adsk.core.CommandEventHandler):
             # Returns Data
             selector = adsk.core.Command.cast(args.command).commandInputs.item(0)
 
-            wheelOcc = [selector.selection(i).entity.fullPathName.split('+')[0] for i in range(selector.selectionCount)]
+            wheelOccs = [selector.selection(i).entity.fullPathName for i in range(selector.selectionCount)]
+
+            adsk.terminate()
 
             selector.isVisible = False
             selector.isEnabled = False
             selector.deleteMe()
 
-            finalExport(wheelOcc)
+            # Next Step: Ask Location to store
+            ui.messageBox("[2/2] In the Next Step:\n   Select the Location to Store the Folder of the Robot Data", "Configuration Steps")
+
+            folderDia = ui.createFolderDialog()
+            folderDia.title = "Select Location to Store Folder of Robot Data"
+            dlgResults = folderDia.showDialog()
+
+            if dlgResults != 0:
+                ui.messageBox("Cancelled Task")
+                adsk.terminate()
+                return
+
+            global exportPath
+            exportPath = folderDia.folder + "/" + app.activeDocument.name
+
+            # Start Meshing Function
+            jntXMLS = MeshExporter.runMesh(wheelOccs)
+            if not jntXMLS:
+                ui.messageBox("Cancelled Task")
+                adsk.terminate()
+                return
+
+            # Does Final Step
+            finalExport(jntXMLS)
         except:
             ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
             adsk.terminate()
 
 
+# Creates JntXML mid MeshExporter as combining components can break joints
+def createJntXML(jointObj, parentNum, childNum, jointCount):
+    root = minidom.Document()
+    # Creates Basic Joint Setup
+    jntXML = root.createElement('joint')
+    jntXML.setAttribute('name', "unityjoint_" + str(jointCount))
+    parent = root.createElement('parent')
+    parent.setAttribute('link', "unitycomp_" + str(parentNum))
+    jntXML.appendChild(parent)
+    child = root.createElement('child')
+    child.setAttribute('link', "unitycomp_" + str(childNum))
+    jntXML.appendChild(child)
+    # Revolute or Prismatic Joint
+    if jointObj.jointMotion.jointType == 1:
+        jntXML.setAttribute('type', 'revolute')
+        jntAxis = jointObj.jointMotion.rotationAxisVector
+        jntLimit = jointObj.jointMotion.rotationLimits
+    elif jointObj.jointMotion.jointType == 2:
+        jntXML.setAttribute('type', 'prismatic')
+        jntAxis = jointObj.jointMotion.slideDirectionVector
+        jntLimit = jointObj.jointMotion.slideLimits
+    # Sets Axis of Travel for Joints
+    axis = root.createElement('axis')
+    jntAxis.transformBy(MeshExporter.newTransform)
+    if abs(jntAxis.x) < .01: jntAxis.x = 0
+    if abs(jntAxis.y) < .01: jntAxis.y = 0
+    if abs(jntAxis.z) < .01: jntAxis.z = 0
+    axis.setAttribute('xyz', str(jntAxis.x) + ' ' + str(jntAxis.y) + ' ' + str(jntAxis.z))
+    jntXML.appendChild(axis)
+    # Finds Origin of Joint
+    jointsOrigin = MeshExporter.jointOriginWorldSpace(jointObj)
+    jointsOrigin.transformBy(MeshExporter.newTransform)
+    origin = root.createElement('origin')
+    origin.setAttribute('xyz', str(jointsOrigin.x) + " " + str(jointsOrigin.y) + " " + str(jointsOrigin.z))
+    jntXML.appendChild(origin)
+    # Sets Limits if Found
+    limit = root.createElement('limit')
+    lowerLimit = ""
+    if jntLimit.isMinimumValueEnabled:
+        lowerLimit = str(jntLimit.minimumValue)
+    limit.setAttribute('lower', lowerLimit)
+    upperLimit = ""
+    if jntLimit.isMaximumValueEnabled:
+        upperLimit = str(jntLimit.maximumValue)
+    limit.setAttribute('upper', upperLimit)
+    jntXML.appendChild(limit)
+
+    # --ADD MOTION LINKS? (Not exposed to API)--
+
+    return jntXML
+
 
 # Export Function for URDF and STL Files
-def finalExport(wheelOccNames = []):
-    global app, ui, docName
+def finalExport(jntXMLS):
+    global app, ui
 
     product = app.activeProduct
     design = adsk.fusion.Design.cast(product)
@@ -180,87 +250,62 @@ def finalExport(wheelOccNames = []):
     app.activeViewport.refresh()
     adsk.doEvents()
 
-    # Hides Wheel Occurrences
-    for name in wheelOccNames:
-        rootComp.occurrences.itemByName(name).isLightBulbOn = False
+    # Orients Components
+    rootComp.occurrences[0].transform = MeshExporter.newTransform
 
     # Creates XML URDF File
     root = minidom.Document()
     robot = root.createElement('robot')
-    robot.setAttribute('name', docName)
+    robot.setAttribute('name', app.activeDocument.name)
     root.appendChild(robot)
 
-    attributes = root.createElement('attributes')
-    point = rootComp.boundingBox.maxPoint
-    boxStr = str(point.x) + " " + str(point.y) + " " + str(point.z)
-    point = rootComp.boundingBox.minPoint
-    boxStr += ", " + str(point.x) + " " + str(point.y) + " " + str(point.z)
-    attributes.setAttribute('boundingBox', boxStr)
-    robot.appendChild(attributes)
-
     # Adds Links just for mass reading purposes
-    for occ in rootComp.occurrences:
-        lnkXML = root.createElement('link')
-        lnkXML.setAttribute('name', occ.name[:-2])
-        robot.appendChild(lnkXML)
-        massXML = root.createElement('mass')
-        massXML.setAttribute('value', str(occ.physicalProperties.mass))
-        lnkXML.appendChild(massXML)
+    for occ in rootComp.occurrences[0].childOccurrences:
+        if occ.isLightBulbOn:
+            lnkXML = root.createElement('link')
+            lnkXML.setAttribute('name', occ.name[:-2])
+            robot.appendChild(lnkXML)
+            # Sets Mass Info
+            massXML = root.createElement('mass')
+            massXML.setAttribute('value', str(occ.physicalProperties.mass))
+            lnkXML.appendChild(massXML)
 
-    # Adds Joints and their corresponding info
-    for revJoint in rootComp.joints:
-        if not revJoint.name.startswith('unityjoint_'):
-            continue
-        jntXML = root.createElement('joint')
-        jntXML.setAttribute('name', revJoint.name)
+    # Adds the Previously calculated JntXMLS
+    for jntXML in jntXMLS:
+        dissolved = True
+        for occ in rootComp.occurrences[0].childOccurrences:
+            # Checks if comp still exists
+            if occ.name[:-2] == jntXML.firstChild.getAttribute("link"): # parent
+                dissolved = False
+            # Check if is a wheel
+            if occ.name[:-2] == jntXML.childNodes[1].getAttribute("link"): # child
+                if not occ.isLightBulbOn:
+                    wheelXML = root.createElement('wheel')
+                    wheelXML.setAttribute('type', '')
+                    '''
+                    # Doesn't work due to axels being apart of wheel object so better to set in importer
+                    
+                    # Gets offset and center properties
+                    axis = adsk.core.Vector3D.create(0, 0, 0)
+                    axis.setWithArray([float(i) for i in jntXML.childNodes[2].getAttribute("xyz").split(' ')])
+                    origin = adsk.core.Vector3D.create(0, 0, 0)
+                    origin.setWithArray([float(i) for i in jntXML.childNodes[3].getAttribute("xyz").split(' ')])
+                    yAxis = adsk.core.Vector3D.create(0, 1, 0)
+                    newTransform = adsk.core.Matrix3D.create()
+                    newTransform.setToAlignCoordinateSystems(origin.asPoint(), axis, yAxis, axis.crossProduct(yAxis),
+                        adsk.core.Point3D.create(0, 0, 0), adsk.core.Vector3D.create(1, 0, 0), yAxis, adsk.core.Vector3D.create(0, 0, 1))
+                    combinedTransform = MeshExporter.newTransform.copy()
+                    combinedTransform.transformBy(newTransform)
+                    occ.transform2 = combinedTransform
+                    wheelXML.setAttribute('offset', str(occ.boundingBox.maxPoint.x))
+                    '''
+                    wheelXML.setAttribute('offset', "0")
+                    jntXML.appendChild(wheelXML)
+        if dissolved:
+            jntXML.firstChild.setAttribute('link', 'unitycomp_0')
         robot.appendChild(jntXML)
-        parent = root.createElement('parent')
-        parent.setAttribute('link', revJoint.occurrenceTwo.name[:-2])
-        jntXML.appendChild(parent)
-        child = root.createElement('child')
-        child.setAttribute('link', revJoint.occurrenceOne.name[:-2])
-        jntXML.appendChild(child)
-        axis = root.createElement('axis')
-        rotAxis = revJoint.jointMotion.rotationAxisVector
-        axis.setAttribute('xyz', str(rotAxis.x) + ' ' + str(rotAxis.y) + ' ' + str(rotAxis.z))
-        jntXML.appendChild(axis)
-        # Finds Origin of Joint
-        jointsOrigin = MeshExporter.jointOriginWorldSpace(revJoint, rootComp)
-        origin = root.createElement('origin')
-        origin.setAttribute('xyz', str(jointsOrigin.x) + " " + str(jointsOrigin.y) + " " + str(jointsOrigin.z))
-        jntXML.appendChild(origin)
-        # Checks if a wheel joint
-        if not revJoint.occurrenceOne.isLightBulbOn:
-            wheelXML = root.createElement('wheel')
-            wheelXML.setAttribute('type', '')
-            wheelXML.setAttribute('offset', '0')
-            jntXML.appendChild(wheelXML)
-        # Revolute (Limited) or Continuous
-        if revJoint.jointMotion.rotationLimits.isMaximumValueEnabled:
-            jntXML.setAttribute('type', 'revolute')
-            limit = root.createElement('limit')
-            limit.setAttribute('upper', str(revJoint.jointMotion.rotationLimits.maximumValue))
-            limit.setAttribute('lower', str(revJoint.jointMotion.rotationLimits.minimumValue))
-            jntXML.appendChild(limit)
-        else:
-            jntXML.setAttribute('type', 'continuous')
-
-        # --ADD SLIDER JOINTS AND MOTION LINKS--
 
     # Store Meshes
-    ui.messageBox("Select Location to Store Folder of Robot Data", "Almost Finished!")
-
-    folderDia = ui.createFolderDialog()
-    folderDia.title = "Select Location to Store Folder of Robot Data"
-    dlgResults = folderDia.showDialog()
-
-    if dlgResults != 0:
-        ui.messageBox("Cancelled Task")
-        adsk.terminate()
-        return
-
-    exportPath = folderDia.folder + "/" + docName
-
     if not os.path.exists(exportPath):
         os.makedirs(exportPath)
 
@@ -270,27 +315,41 @@ def finalExport(wheelOccNames = []):
     f.write(xml_string)
     f.close()
 
-    progressBar.show("Converting Robot File", "Step 5: Creating Final Meshes...", 0, rootComp.occurrences.count, 0)
+    progressBar.show("Converting Robot File", "Step 5: Creating Final Meshes...", 0, rootComp.occurrences[0].childOccurrences.count, 0)
     progressBar.progressValue = 0
 
-    for o in range(rootComp.occurrences.count):
-        try:
-            # STL
-            occ = rootComp.occurrences.item(o)
-            stlExport = design.exportManager.createSTLExportOptions(occ, exportPath + "/" + occ.name[:-2])
-            stlExport.meshRefinement = 2
-            stlExport.aspectRatio *= 10
-            stlExport.maximumEdgeLength *= 10
-            stlExport.normalDeviation *= 10
-            stlExport.surfaceDeviation *= 10
-            design.exportManager.execute(stlExport)
-            # Progress
-            progressBar.progressValue += 1
-        except:
-            pass
+    for occ in rootComp.occurrences[0].childOccurrences:
+        if occ.isLightBulbOn:
+            try:
+                # STL
+                stlExport = design.exportManager.createSTLExportOptions(occ, exportPath + "/" + occ.name[:-2])
+                stlExport.meshRefinement = 2
+                stlExport.aspectRatio *= 10
+                stlExport.maximumEdgeLength *= 10
+                stlExport.normalDeviation *= 10
+                stlExport.surfaceDeviation *= 10
+                design.exportManager.execute(stlExport)
+                # Progress
+                if progressBar.wasCancelled:
+                    ui.messageBox("Cancelled Task")
+                    adsk.terminate()
+                    return
+            except:
+                pass
+        progressBar.progressValue += 1
 
-    app.activeDocument.save("")
     progressBar.hide()
 
     ui.messageBox('Check the folder "' + exportPath + '" for your finalized robot!', "Finished!")
     adsk.terminate()
+
+# Clean up CAD File
+def stop(context):
+    try:
+        if app.activeDocument.isModified and started:
+            dataFile = app.activeDocument.dataFile
+            app.activeDocument.close(False)
+            app.documents.open(dataFile)
+        #ui.messageBox("tempdisable")
+    except:
+        ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
