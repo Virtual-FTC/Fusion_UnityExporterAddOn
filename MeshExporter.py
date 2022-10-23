@@ -5,33 +5,50 @@ import adsk.core, adsk.fusion
 
 from . import UnityExporter
 
+rootComp = None
 app = None
 ui = adsk.core.UserInterface.cast(None)
 
 jointOccs = {}
 newTransform = None
-usesGroundedComps = False
+
+# Recursively finds grounded comps
+def findGroundOccs(occurrences):
+    groundedOccs = []
+
+    for i in range(0, occurrences.count):
+        occ = occurrences[i]
+        if occ.isGrounded:
+            groundedOccs.append(occ)
+        if occ.childOccurrences:
+            groundedOccs.extend(findGroundOccs(occ.childOccurrences))
+
+    return groundedOccs
 
 # Recursively travels through assemblies and stores all assemblies with joint info
 def findJointAssemblies(occurrences):
-    global usesGroundedComps
     assemblyOcc = []
 
     for i in range(0, occurrences.count):
         occ = occurrences.item(i)
 
+        # Breaks Links to be able to edit comps freely
         if occ.isReferencedComponent:
             occ.breakLink()
 
         if occ.childOccurrences:
+            # If has Joints, add
             if occ.component.joints.count > 0 or occ.component.rigidGroups.count > 0:
                 assemblyOcc.append(occ)
+                # Locks Joints
+                for joint in occ.component.joints:
+                    if joint.jointMotion.jointType != 0:
+                        joint.isLocked = True
+            
+            # Nested Search
             newOcc = findJointAssemblies(occ.childOccurrences)
             for o in newOcc:
                 assemblyOcc.append(o)
-
-        if occ.isGrounded:
-            usesGroundedComps = True
 
     return assemblyOcc
 
@@ -48,10 +65,6 @@ def removeSmallInAssembly(baseSize, occurrences):
 
 # Return Origin of Joint in World Space
 def jointOriginWorldSpace(jointObj):
-    product = app.activeProduct
-    design = adsk.fusion.Design.cast(product)
-    rootComp = design.rootComponent
-
     jointsOcc = jointObj.occurrenceTwo
     if not jointsOcc:
         jointsOcc = rootComp
@@ -99,12 +112,12 @@ def returnNormalVector(point):
         return returnVec
 
 # Rigid Combination
-def rigidOccs(occs, assembledComps, _assembledComps, exportComp):
+def rigidOccs(occs, assembledComps, _assembledComps, groundedComps, exportComp):
     # New Component per Rigid Joint or absorb into other Group
     newCompNames = []
     grounded = False
     for occRG in occs:
-        if occRG.isGrounded:
+        if occRG in groundedComps:
             grounded = True
         for i in range(len(assembledComps)):
             # If Comp Already in Link, Absorb Previous Linked Components into One
@@ -141,6 +154,7 @@ def runMesh(wheelNames):
     # Get the root component of the active design
     product = app.activeProduct
     design = adsk.fusion.Design.cast(product)
+    global rootComp
     rootComp = design.rootComponent
     app.activeViewport.refresh()
 
@@ -202,8 +216,14 @@ def runMesh(wheelNames):
     newTransform.setToAlignCoordinateSystems(origin, yVector.crossProduct(zVector), yVector, zVector, minPoint.asPoint(),
         adsk.core.Vector3D.create(-1, 0, 0), adsk.core.Vector3D.create(0, 1, 0), adsk.core.Vector3D.create(0, 0, -1))
 
-    # Creates List of assembly components that contain joints
+    # Checks if any grounded comps
+    groundedComps = findGroundOccs(rootComp.occurrences)
+
+    # Creates List of assembly components that contain (locked) joints
     assemblyOcc = [rootComp]
+    for joint in rootComp.joints:
+        if joint.jointMotion.jointType != 0:
+            joint.isLocked = True
     for occ in findJointAssemblies(rootComp.occurrences):
         assemblyOcc.append(occ)
 
@@ -229,10 +249,12 @@ def runMesh(wheelNames):
     for occs in assemblyOcc:
         occ = occs if occs == rootComp else occs.component
         for rg in occ.rigidGroups:
+            if rg.isSuppressed:
+                continue
             if occs != rootComp:
                 rg = rg.createForAssemblyContext(occs)
             # Calls to modify assembledComps based off new occs
-            assembledComps, _assembledComps = rigidOccs(rg.occurrences, assembledComps, _assembledComps, exportComp)
+            assembledComps, _assembledComps = rigidOccs(rg.occurrences, assembledComps, _assembledComps, groundedComps, exportComp)
         if progressBar.wasCancelled:
             return False
         progressBar.progressValue += 1
@@ -241,64 +263,85 @@ def runMesh(wheelNames):
     for occs in assemblyOcc:
         occ = occs if occs == rootComp else occs.component
         for rigidJoint in occ.joints:
+            if rigidJoint.isSuppressed:
+                continue
             # Joins Rigid Joint Components together
-            if (rigidJoint.jointMotion.jointType == 0):
+            if rigidJoint.jointMotion.jointType == 0:
                 if occs != rootComp:
                     rigidJoint = rigidJoint.createForAssemblyContext(occs)
                 jointsOcc = [rigidJoint.occurrenceOne, rigidJoint.occurrenceTwo]
                 # Calls to modify assembledComps based off new occs
-                assembledComps, _assembledComps = rigidOccs(jointsOcc, assembledComps, _assembledComps, exportComp)
+                assembledComps, _assembledComps = rigidOccs(jointsOcc, assembledComps, _assembledComps, groundedComps, exportComp)
         if progressBar.wasCancelled:
             return False
         progressBar.progressValue += 1
 
     # Does Revolve/Slide Joints Last
-    keepGroups = []
+    childGroups = []
+    jointPairs = []
     jntXMLS = []
     jointCount = 0
     for occs in assemblyOcc:
         occ = occs if occs == rootComp else occs.component
         for jointObj in occ.joints:
+            if jointObj.isSuppressed:
+                continue
             # Breaks up Joint Components into seperate assembledComps
             if jointObj.jointMotion.jointType == 1 or jointObj.jointMotion.jointType == 2:
                 if occs != rootComp:
                     jointObj = jointObj.createForAssemblyContext(occs)
                 # Creates an Unlinked Component for the Revolute Part
                 occurrences = [jointObj.occurrenceOne, jointObj.occurrenceTwo]
-                for jntOcc in range(2 if usesGroundedComps and occurrences[1] else 1):
-                    if occurrences[jntOcc] == rootComp:
+                                    # --Can skip grounded check if no grounded comps--
+                for jntOcc in range(2 if len(groundedComps) > 0 and occurrences[1] else 1):
+                    if occurrences[jntOcc] == rootComp or occurrences[jntOcc] in groundedComps:
+                        if jntOcc == 0:
+                            childGroups.append(0)
+                        else:
+                            parentGroup = 0
                         continue
                     for i in range(len(assembledComps)):
                         if occurrences[jntOcc].fullPathName in assembledComps[i]:
                             if jntOcc == 0:
-                                keepGroups.append(i)
+                                childGroups.append(i)
+                            else:
+                                parentGroup = i
                             break
                     else:
                         # Not a part of a section
                         if jntOcc == 0:
-                            keepGroups.append(len(assembledComps))
+                            childGroups.append(len(assembledComps))
+                        else:
+                            parentGroup = len(assembledComps)
                         newOcc = exportComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
                         newOcc.component.name = "unitycomp_" + str(len(assembledComps))
                         assembledComps.append([occurrences[jntOcc].fullPathName])
                         _assembledComps.append(newOcc)
-                # Gathers last data and sends to make JntXML
-                parentNum = 0
-                for i in range(len(assembledComps)):
-                    if jointObj.occurrenceTwo.fullPathName in assembledComps[i]:
-                        parentNum = i
-                        break
-                jntXMLS.append(UnityExporter.createJntXML(jointObj, parentNum, keepGroups[-1], jointCount))
+                # Setup Joint XML
+                jntXMLS.append(UnityExporter.createJntXML(jointObj, parentGroup, childGroups[-1], jointCount))
+                jointPairs.append([parentGroup, childGroups[-1]])
                 jointCount += 1
         if progressBar.wasCancelled:
             return False
         progressBar.progressValue += 2
 
-    # Removes Components not under keeps if not using grounded comps
-    if not usesGroundedComps:
-        for i in range(1, len(assembledComps)):
-            if _assembledComps[i].isValid and i not in keepGroups:
-                assembledComps[i] = []
-                _assembledComps[i].deleteMe()
+    # Need to do basejoint check if no grounded comp present
+    groundedJnts = [0]
+    # Check if already part of a grounded connection
+    if len(groundedComps) > 0:
+        i = 0
+        while i < len(groundedJnts):
+            for pair in jointPairs:
+                if pair[0] == groundedJnts[i] and pair[1] not in groundedJnts:
+                    groundedJnts.append(pair[1])
+                elif pair[1] == groundedJnts[i] and pair[0] not in groundedJnts:
+                    groundedJnts.append(pair[0])
+            i += 1
+    # For all groups not part of a grounded connection, ground loose parents of joints
+    for i in range(1, len(assembledComps)):
+        if i not in groundedComps and _assembledComps[i].isValid and i not in childGroups:
+            assembledComps[i] = []
+            _assembledComps[i].deleteMe()
     app.activeViewport.refresh()
 
     # Meshing Code
@@ -314,6 +357,14 @@ def runMesh(wheelNames):
                     break
                 childOccs = newOcc.childOccurrences
             if newOcc:
+                # --WIP TEST--
+                # If has children comps, don't also link them
+                #if newOcc.childOccurrences:
+                #    newComp = _assembledComps[i].component.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+                #    for body in newOcc.bRepBodies:
+                #        body.moveToComponent(newComp)
+                # Link connected comp to assembledComp
+                #else:
                 newOcc.moveToComponent(_assembledComps[i])
             if progressBar.wasCancelled:
                 return False
