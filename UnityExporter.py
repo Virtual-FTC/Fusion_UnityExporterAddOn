@@ -49,11 +49,21 @@ Also make sure to support 4 Bar Parallel Lifts with Joints on Both Sides!'''
 
         #Saves File if not saved before starting
         if app.activeDocument.isModified:
-            progressBar.show("Converting Robot File", "Saving File...", 0, 1, 0)
-            progressBar.progressValue = 1
-            app.activeViewport.refresh()
-            adsk.doEvents()
-            app.activeDocument.save("")
+            #Asks whether to save
+            results = ui.messageBox("If you don't save, your unsaved changes to \"" + app.activeDocument.name +
+                "\" will be discarded.\n\nDo you wish to save?", "Unsaved Changes", 4, 3)
+            
+            if results == 1: #Cancelled
+                ui.messageBox("Cancelled Task")
+                adsk.terminate()
+                return
+
+            if results == 2: #Yes
+                progressBar.show("Converting Robot File", "Saving File...", 0, 1, 0)
+                progressBar.progressValue = 1
+                app.activeViewport.refresh()
+                adsk.doEvents()
+                app.activeDocument.save("")
 
         # Modifies Current Document Settings
         started = True
@@ -346,10 +356,10 @@ def finalExport(jntXMLS):
 # Clean up CAD File
 def stop(context):
     try:
-        if app.activeDocument.isModified and started:
-            dataFile = app.activeDocument.dataFile
-            app.activeDocument.close(False)
-            app.documents.open(dataFile)
-        #ui.messageBox("tempdisable")
+        #if app.activeDocument.isModified and started:
+        #    dataFile = app.activeDocument.dataFile
+        #    app.activeDocument.close(False)
+        #    app.documents.open(dataFile)
+        ui.messageBox("tempdisable")
     except:
         ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
