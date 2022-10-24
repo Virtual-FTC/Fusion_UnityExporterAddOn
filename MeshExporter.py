@@ -11,6 +11,7 @@ ui = adsk.core.UserInterface.cast(None)
 
 jointOccs = {}
 newTransform = None
+inverseTransform = None
 
 # Recursively finds grounded comps
 def findGroundOccs(occurrences):
@@ -137,7 +138,7 @@ def rigidOccs(occs, assembledComps, _assembledComps, groundedComps, exportComp):
     if grounded:
         assembledComps[0].extend(newCompNames)
     else:
-        newComp = exportComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+        newComp = exportComp.occurrences.addNewComponent(inverseTransform)
         newComp.component.name = "unitycomp_" + str(len(assembledComps))
         assembledComps.append(newCompNames)
         _assembledComps.append(newComp)
@@ -199,7 +200,7 @@ def runMesh(wheelNames):
     app.activeViewport.camera = originalCam
     app.activeViewport.fit()
     # Gets Transform to apply to occurrences
-    global newTransform
+    global newTransform, inverseTransform
     newTransform = adsk.core.Matrix3D.create()
     origin = adsk.core.Point3D.create(0, 0, 0)
     newTransform.setToAlignCoordinateSystems(origin, yVector.crossProduct(zVector), yVector, zVector, origin,
@@ -235,7 +236,7 @@ def runMesh(wheelNames):
     exportComp.name = "exportcomps"
     # (First Assembled Group is Base Group)
     assembledComps = [[]]
-    inverseTransform = newTransform.copy() # This is needed as basecomp refuses to be rotated
+    inverseTransform = newTransform.copy() # This is needed as some comps need inverse transform applied
     inverseTransform.invert()
     _assembledComps = [exportComp.occurrences.addNewComponent(inverseTransform)]
     _assembledComps[0].component.name = "unitycomp_0"
@@ -313,7 +314,7 @@ def runMesh(wheelNames):
                             childGroups.append(len(assembledComps))
                         else:
                             parentGroup = len(assembledComps)
-                        newOcc = exportComp.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+                        newOcc = exportComp.occurrences.addNewComponent(inverseTransform)
                         newOcc.component.name = "unitycomp_" + str(len(assembledComps))
                         assembledComps.append([occurrences[jntOcc].fullPathName])
                         _assembledComps.append(newOcc)
