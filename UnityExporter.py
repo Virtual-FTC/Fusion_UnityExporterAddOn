@@ -356,10 +356,10 @@ def finalExport(jntXMLS):
 # Clean up CAD File
 def stop(context):
     try:
-        #if app.activeDocument.isModified and started:
-        #    dataFile = app.activeDocument.dataFile
-        #    app.activeDocument.close(False)
-        #    app.documents.open(dataFile)
-        ui.messageBox("tempdisable")
+        if app.activeDocument.isModified and started:
+            dataFile = app.activeDocument.dataFile
+            app.activeDocument.close(False)
+            app.documents.open(dataFile)
+        #ui.messageBox("tempdisable")
     except:
         ui.messageBox('Failed:\n{}'.format(traceback.format_exc()))
