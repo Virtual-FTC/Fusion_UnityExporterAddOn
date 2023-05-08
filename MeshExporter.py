@@ -293,8 +293,9 @@ def runMesh(wheelNames):
                     jointObj = jointObj.createForAssemblyContext(occs)
                 # Creates an Unlinked Component for the Revolute Part
                 occurrences = [jointObj.occurrenceOne, jointObj.occurrenceTwo]
-                                    # --Can skip grounded check if no grounded comps--
-                for jntOcc in range(2 if len(groundedComps) > 0 and occurrences[1] else 1):
+                if not occurrences[1]:
+                    parentGroup = 0
+                for jntOcc in range(2 if occurrences[1] else 1):
                     if occurrences[jntOcc] == rootComp or occurrences[jntOcc] in groundedComps:
                         if jntOcc == 0:
                             childGroups.append(0)
