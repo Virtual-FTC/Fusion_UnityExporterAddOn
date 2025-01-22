@@ -33,6 +33,9 @@ def findJointAssemblies(occurrences):
     for i in range(0, occurrences.count):
         occ = occurrences.item(i)
 
+        if occ.name.startswith("component_"):
+            occ.component.name = "_" + occ.component.name
+
         # Breaks Links to be able to edit comps freely
         if occ.isReferencedComponent:
             occ.breakLink()
@@ -90,7 +93,7 @@ def jointOriginWorldSpace(jointObj):
         ui.messageBox("Whoops! It seems Joint: \"" + jointObj.name + "\" is connected to a currently not supported piece of Geometry! In a future update this may be fixed.")
         joint.entityOne.body.parentComponent
     baseComp = rootComp.allOccurrencesByComponent(baseComp).item(0)
-    if baseComp:
+    if baseComp and not hasattr(jointObj, 'storedJoint'):
         transform = baseComp.transform2
         transform.invert()
         transform.transformBy(jointsOcc.transform2)
@@ -139,7 +142,7 @@ def rigidOccs(occs, assembledComps, _assembledComps, groundedComps, exportComp):
         assembledComps[0].extend(newCompNames)
     else:
         newComp = exportComp.occurrences.addNewComponent(inverseTransform)
-        newComp.component.name = "unitycomp_" + str(len(assembledComps))
+        newComp.component.name = "component_" + str(len(assembledComps))
         assembledComps.append(newCompNames)
         _assembledComps.append(newComp)
     return assembledComps, _assembledComps
@@ -239,7 +242,7 @@ def runMesh(wheelNames):
     inverseTransform = newTransform.copy() # This is needed as some comps need inverse transform applied
     inverseTransform.invert()
     _assembledComps = [exportComp.occurrences.addNewComponent(inverseTransform)]
-    _assembledComps[0].component.name = "unitycomp_0"
+    _assembledComps[0].component.name = "chassis"
 
     if progressBar.wasCancelled:
         return False
@@ -316,7 +319,7 @@ def runMesh(wheelNames):
                         else:
                             parentGroup = len(assembledComps)
                         newOcc = exportComp.occurrences.addNewComponent(inverseTransform)
-                        newOcc.component.name = "unitycomp_" + str(len(assembledComps))
+                        newOcc.component.name = "component_" + str(len(assembledComps))
                         assembledComps.append([occurrences[jntOcc].fullPathName])
                         _assembledComps.append(newOcc)
                 # Setup Joint XML

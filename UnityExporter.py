@@ -4,8 +4,10 @@
 import os
 from xml.dom import minidom
 import adsk.core, adsk.fusion, adsk.cam, traceback
+import math
 
 from . import MeshExporter
+from . import AsBuiltJoints
 
 app = None
 ui = adsk.core.UserInterface.cast(None)
@@ -72,6 +74,8 @@ Also make sure to support 4 Bar Parallel Lifts with Joints on Both Sides!'''
         app.activeViewport.refresh()
         adsk.doEvents()
         design = adsk.fusion.Design.cast(app.activeProduct)
+        if design.designType != 0:
+            AsBuiltJoints.saveJointInfo()
         design.designType = 0
         design.fusionUnitsManager.distanceDisplayUnits = 0
 
@@ -196,25 +200,37 @@ class MyExecuteHandler(adsk.core.CommandEventHandler):
 
 # Creates JntXML mid MeshExporter as combining components can break joints
 def createJntXML(jointObj, parentNum, childNum, jointCount):
+
+    # Check if AsBuiltJoint
+    for joint in AsBuiltJoints.savedJointInfo.keys():
+        if joint == jointObj.entityToken:
+            jointObj = AsBuiltJoints.savedJointInfo[jointObj.entityToken]
+            break
+
     root = minidom.Document()
     # Creates Basic Joint Setup
     jntXML = root.createElement('joint')
     jntXML.setAttribute('name', "unityjoint_" + str(jointCount))
     parent = root.createElement('parent')
-    parent.setAttribute('link', "unitycomp_" + str(parentNum))
+    parent.setAttribute('link', "component_" + str(parentNum))
     jntXML.appendChild(parent)
     child = root.createElement('child')
-    child.setAttribute('link', "unitycomp_" + str(childNum))
+    child.setAttribute('link', "component_" + str(childNum))
     jntXML.appendChild(child)
+    jntValue = 0
     # Revolute or Prismatic Joint
     if jointObj.jointMotion.jointType == 1:
         jntXML.setAttribute('type', 'revolute')
         jntAxis = jointObj.jointMotion.rotationAxisVector
         jntLimit = jointObj.jointMotion.rotationLimits
+        jntValue = jointObj.jointMotion.rotationValue
     elif jointObj.jointMotion.jointType == 2:
         jntXML.setAttribute('type', 'prismatic')
         jntAxis = jointObj.jointMotion.slideDirectionVector
         jntLimit = jointObj.jointMotion.slideLimits
+        jntValue = jointObj.jointMotion.slideValue
+    if jntValue < .01:
+        jntValue = 0
     # Sets Axis of Travel for Joints
     axis = root.createElement('axis')
     jntAxis.transformBy(MeshExporter.newTransform)
@@ -233,11 +249,17 @@ def createJntXML(jointObj, parentNum, childNum, jointCount):
     limit = root.createElement('limit')
     lowerLimit = ""
     if jntLimit.isMinimumValueEnabled:
-        lowerLimit = str(jntLimit.minimumValue)
+        lowerLimit = jntLimit.minimumValue - jntValue
+        if lowerLimit < -2 * math.pi:
+            lowerLimit += 2 * math.pi
+        lowerLimit = str(lowerLimit)
     limit.setAttribute('lower', lowerLimit)
     upperLimit = ""
     if jntLimit.isMaximumValueEnabled:
-        upperLimit = str(jntLimit.maximumValue)
+        upperLimit = jntLimit.maximumValue - jntValue
+        if upperLimit < 0:
+            upperLimit += 2 * math.pi
+        upperLimit = str(upperLimit)
     limit.setAttribute('upper', upperLimit)
     jntXML.appendChild(limit)
 
@@ -312,14 +334,14 @@ def finalExport(jntXMLS):
                     wheelXML.setAttribute('offset', "0")
                     jntXML.appendChild(wheelXML)
         if dissolved:
-            jntXML.firstChild.setAttribute('link', 'unitycomp_0')
+            jntXML.firstChild.setAttribute('link', 'chassis')
         robot.appendChild(jntXML)
 
     # Store Meshes
     if not os.path.exists(exportPath):
         os.makedirs(exportPath)
 
-    xml_string = root.toxml()
+    xml_string = root.toprettyxml()
 
     f = open(exportPath + "/robotfile.urdf", "w")
     f.write(xml_string)
